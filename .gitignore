@@ -1,0 +1,121 @@
+# ---------------------------------------------
+# .gitignore for .NET / C# / Avalonia projects
+# ---------------------------------------------
+
+# Build results
+[Bb]in/
+[Oo]bj/
+[Oo]ut/
+[Ll]og/
+[Ll]ogs/
+[Dd]ebug/
+[Rr]elease/
+[Dd]ebugPublic/
+[Rr]eleases/
+x64/
+x86/
+ARM/
+ARM64/
+build/
+bld/
+publish/
+[Pp]ublishProfiles/
+*.binlog
+
+# .NET Core / SDK
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# Roslyn cache directories
+*.ide/
+
+# MSBuild
+*.tlog
+*.cache
+*.VisualState.xml
+*.FileListAbsolute.txt
+*.GeneratedMSBuildEditorConfig.editorconfig
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.userprefs
+*.psess
+*.vsp
+*.vspx
+*.sap
+
+# Rider / ReSharper
+.idea/
+*.DotSettings.user
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.sln.iml
+
+# VS Code (保留项目级配置，忽略本地用户文件)
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
+
+# NuGet
+*.nupkg
+*.snupkg
+**/[Pp]ackages/*
+!**/[Pp]ackages/build/
+*.nuget.props
+*.nuget.targets
+
+# Test results / coverage
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+*.coverage
+*.coveragexml
+coverage*.json
+coverage*.xml
+coverage*.info
+
+# Avalonia
+*.xaml.g.cs
+*.g.cs
+*.g.resources
+
+# dotCover / NCrunch / JustCode
+_NCrunch_*
+.*crunch*.local.xml
+nCrunchTemp_*
+*.dotCover
+
+# Benchmark / profiling
+BenchmarkDotNet.Artifacts/
+
+# ClickOnce / 发布
+*.publish.xml
+*.pfx
+*.publishsettings
+orleans.codegen.cs
+
+# OS 生成的文件
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# 本地配置 / 敏感信息
+*.local.json
+appsettings.*.Local.json
+secrets.json
+
+# 临时文件
+*.swp
+*.bak
+*.tmp
+*.log
+*~

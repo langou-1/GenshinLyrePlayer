@@ -1,0 +1,144 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:GenshinLyrePlayer.ViewModels"
+        xmlns:ctl="using:GenshinLyrePlayer.Controls"
+        x:Class="GenshinLyrePlayer.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Title="原神琴自动演奏"
+        Width="1100" Height="640"
+        MinWidth="800" MinHeight="480">
+
+    <Window.Styles>
+        <Style Selector="Button.toolbar">
+            <Setter Property="Padding" Value="10,6"/>
+            <Setter Property="Margin" Value="2,0"/>
+        </Style>
+        <Style Selector="Border.panel">
+            <Setter Property="Background" Value="#1f222a"/>
+            <Setter Property="BorderBrush" Value="#2a2d36"/>
+            <Setter Property="BorderThickness" Value="0,0,0,1"/>
+            <Setter Property="Padding" Value="10,6"/>
+        </Style>
+    </Window.Styles>
+
+    <DockPanel>
+
+        <!-- 顶部工具栏 -->
+        <Border Classes="panel" DockPanel.Dock="Top">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+                <Button Classes="toolbar" Content="📂 导入 MIDI" Click="OnOpenClicked"/>
+                <Rectangle Width="1" Fill="#333" Margin="4,4"/>
+
+                <TextBlock Text="乐器:" VerticalAlignment="Center" Margin="4,0"/>
+                <ComboBox ItemsSource="{Binding AvailableInstruments}"
+                          SelectedItem="{Binding SelectedInstrument}"
+                          MinWidth="150" VerticalAlignment="Center"
+                          ToolTip.Tip="选择要模拟的原神琴类乐器。自动移调时若当前乐器无法完整覆盖所有音，会尝试切换到其它乐器。">
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel>
+                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
+                                <TextBlock Text="{Binding Description}" FontSize="11" Foreground="#9aa"/>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                </ComboBox>
+                <Rectangle Width="1" Fill="#333" Margin="4,4"/>
+                <!-- 单一的 播放/暂停 切换按钮：内容随 IsPlaying 自动变化，避免 IsVisible 绑定状态不一致 -->
+                <Button Classes="toolbar" MinWidth="110"
+                        Content="{Binding PlayPauseButtonText}"
+                        Command="{Binding TogglePlayPauseCommand}"
+                        ToolTip.Tip="{Binding PlayPauseButtonTooltip}"/>
+                <Button Classes="toolbar" Content="■ 停止 (F9)"
+                        Command="{Binding StopCommand}"
+                        ToolTip.Tip="停止并回到开头"/>
+                <Button Classes="toolbar" Content="⏮ 从头开始"
+                        Command="{Binding RestartFromStartCommand}"/>
+                <Rectangle Width="1" Fill="#333" Margin="4,4"/>
+
+                <TextBlock Text="移调:" VerticalAlignment="Center" Margin="4,0"/>
+                <Button Classes="toolbar" Content="−" Command="{Binding TransposeDownCommand}" Width="36"/>
+                <TextBlock Text="{Binding Transpose, StringFormat={}{0:+#;-#;0}}"
+                           VerticalAlignment="Center" MinWidth="28" HorizontalAlignment="Center"/>
+                <Button Classes="toolbar" Content="+" Command="{Binding TransposeUpCommand}" Width="36"/>
+                <Button Classes="toolbar" Content="自动" Command="{Binding AutoTransposeCommand}"/>
+
+                <Rectangle Width="1" Fill="#333" Margin="4,4"/>
+                <TextBlock Text="倒计时(秒):" VerticalAlignment="Center" Margin="4,0"/>
+                <NumericUpDown Value="{Binding CountdownSeconds}" Minimum="0" Maximum="10"
+                               Increment="1" FormatString="0" Width="100"/>
+
+                <TextBlock Text="倍速:" VerticalAlignment="Center" Margin="12,0,4,0"/>
+                <NumericUpDown Value="{Binding Speed}" Minimum="0.25" Maximum="4"
+                               Increment="0.25" FormatString="0.00" Width="110"/>
+
+                <Rectangle Width="1" Fill="#333" Margin="4,4"/>
+                <TextBlock Text="缩放:" VerticalAlignment="Center" Margin="4,0"/>
+                <Slider Value="{Binding PixelsPerSecond}" Minimum="40" Maximum="400"
+                        Width="140" VerticalAlignment="Center"/>
+            </StackPanel>
+        </Border>
+
+        <!-- 底部状态栏 -->
+        <Border Classes="panel" DockPanel.Dock="Bottom"
+                BorderThickness="0,1,0,0">
+            <Grid ColumnDefinitions="*,Auto,Auto,Auto">
+                <StackPanel Orientation="Horizontal" Spacing="14">
+                    <TextBlock Text="{Binding FileName, FallbackValue='(未加载文件)', TargetNullValue='(未加载文件)'}"
+                               FontWeight="SemiBold"/>
+                    <TextBlock Text="{Binding StatusText}" Foreground="#9aa"/>
+                </StackPanel>
+
+                <TextBlock Grid.Column="1"
+                           Text="{Binding TotalNotes, StringFormat='音符: {0}'}" Margin="10,0"/>
+                <TextBlock Grid.Column="2" Foreground="#5cc88c"
+                           Text="{Binding SupportedNotes, StringFormat='可演奏: {0}'}" Margin="10,0"/>
+                <TextBlock Grid.Column="3" Foreground="#e35555"
+                           Text="{Binding UnsupportedNotes, StringFormat='不支持: {0}'}" Margin="10,0"/>
+            </Grid>
+        </Border>
+
+        <!-- 时间线 -->
+        <Border DockPanel.Dock="Bottom" Background="#17191f" Padding="10,4">
+            <Grid ColumnDefinitions="Auto,*,Auto">
+                <TextBlock Text="{Binding PlayheadText}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                <Slider Grid.Column="1" Minimum="0" Maximum="{Binding Duration}"
+                        Value="{Binding Playhead}" Name="TimelineSlider"
+                        PointerReleased="OnTimelineReleased"/>
+                <TextBlock Grid.Column="2"
+                           Text="{Binding CountdownText}" Foreground="#ffd250"
+                           FontWeight="Bold" VerticalAlignment="Center" Margin="10,0,0,0"/>
+            </Grid>
+        </Border>
+
+        <!-- 钢琴卷帘（带倒计时覆盖层） -->
+        <Grid>
+            <ScrollViewer HorizontalScrollBarVisibility="Auto"
+                          VerticalScrollBarVisibility="Auto"
+                          Name="RollScroll">
+                <ctl:PianoRoll Name="Roll"
+                               Notes="{Binding Notes}"
+                               Duration="{Binding Duration}"
+                               Playhead="{Binding Playhead}"
+                               PixelsPerSecond="{Binding PixelsPerSecond}"
+                               Instrument="{Binding SelectedInstrument}"/>
+            </ScrollViewer>
+
+            <!-- 倒计时大字覆盖层，提醒用户切换到原神 -->
+            <Border Background="#B0000000"
+                    HorizontalAlignment="Center" VerticalAlignment="Center"
+                    CornerRadius="12" Padding="32,20"
+                    IsVisible="{Binding CountdownText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                    IsHitTestVisible="False">
+                <StackPanel HorizontalAlignment="Center">
+                    <TextBlock Text="{Binding CountdownText}"
+                               Foreground="#ffd250" FontSize="44" FontWeight="Bold"
+                               HorizontalAlignment="Center"/>
+                    <TextBlock Text="请立即切换到原神窗口并打开琴界面"
+                               Foreground="#ffffff" FontSize="18"
+                               HorizontalAlignment="Center" Margin="0,8,0,0"/>
+                </StackPanel>
+            </Border>
+        </Grid>
+    </DockPanel>
+</Window>

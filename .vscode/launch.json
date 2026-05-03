@@ -1,0 +1,44 @@
+{
+    // 使用 C# / C# Dev Kit 扩展（ms-dotnettools.csharp 或 ms-dotnettools.csdevkit）即可直接 F5。
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": ".NET 调试 (Debug / Avalonia)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build",
+            "program": "${workspaceFolder}/bin/Debug/net8.0-windows/GenshinLyrePlayer.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "console": "internalConsole",
+            "justMyCode": true,
+            "requireExactSource": true,
+            "symbolOptions": {
+                "searchMicrosoftSymbolServer": false,
+                "searchNuGetOrgSymbolServer": false
+            },
+            "env": {
+                "DOTNET_ENVIRONMENT": "Development",
+                "AVALONIA_LOG_LEVEL": "Debug"
+            }
+        },
+        {
+            "name": ".NET 运行 (Release / 无调试)",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build-release",
+            "program": "${workspaceFolder}/bin/Release/net8.0-windows/GenshinLyrePlayer.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "console": "internalConsole",
+            "noDebug": true
+        },
+        {
+            "name": ".NET 附加到进程",
+            "type": "coreclr",
+            "request": "attach"
+        }
+    ]
+}
