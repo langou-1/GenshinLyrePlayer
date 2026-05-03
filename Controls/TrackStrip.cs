@@ -100,6 +100,8 @@ public sealed class TrackStrip : Control
         {
             if (e.PropertyName == nameof(MidiTrack.Notes) ||
                 e.PropertyName == nameof(MidiTrack.Muted) ||
+                e.PropertyName == nameof(MidiTrack.Solo) ||
+                e.PropertyName == nameof(MidiTrack.IsAudible) ||
                 e.PropertyName == nameof(MidiTrack.Name))
             {
                 InvalidateVisual();
@@ -130,9 +132,10 @@ public sealed class TrackStrip : Control
         int pitchRange = MaxPitch - MinPitch;
         double yScale = (h - 2) / pitchRange;
 
-        // 计算颜色：不活动 / 静音时做降亮处理。
-        var accent = ArgbToBrush(tr.ColorArgb, IsActive ? (tr.Muted ? 120u : 255u) : (tr.Muted ? 70u : 160u));
-        var accentUnsupported = ArgbToBrush(0xE65050, IsActive ? (tr.Muted ? 120u : 255u) : (tr.Muted ? 70u : 160u));
+        // 计算颜色：不活动 / 实际不会发声（Mute 中、或被其它 Solo 屏蔽）时做降亮处理。
+        bool dim = !tr.IsAudible;
+        var accent = ArgbToBrush(tr.ColorArgb, IsActive ? (dim ? 120u : 255u) : (dim ? 70u : 160u));
+        var accentUnsupported = ArgbToBrush(0xE65050, IsActive ? (dim ? 120u : 255u) : (dim ? 70u : 160u));
 
         // 绘制音符：极小的矩形/线段
         double noteH = Math.Max(1.2, Math.Min(3, yScale));

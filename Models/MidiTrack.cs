@@ -21,6 +21,22 @@ public partial class MidiTrack : ObservableObject
     [ObservableProperty] private bool _muted;
 
     /// <summary>
+    /// 用户是否对该轨道开启 Solo（独奏）。多个轨道可同时 Solo。
+    /// 与 Mute 的优先级关系参考 TuneLab：
+    ///   - 任意一条 <see cref="Solo"/> = true 的轨道存在时，所有 <see cref="Solo"/> = false 的轨道都不演奏；
+    ///   - 同一条轨道上 Solo 优先于 Mute，即 Solo=true 的轨道一定会演奏，无论 Muted 是否为 true。
+    /// 综合判定结果由 ViewModel 写入 <see cref="IsAudible"/>。
+    /// </summary>
+    [ObservableProperty] private bool _solo;
+
+    /// <summary>
+    /// 经过全局 Mute / Solo 状态综合判定后，本轨道是否会被实际演奏。
+    /// 该值由 <c>MainWindowViewModel</c> 在 Mute/Solo 变化时统一刷新，
+    /// 视觉层（缩略图、统计）只需读取此布尔即可。
+    /// </summary>
+    [ObservableProperty] private bool _isAudible = true;
+
+    /// <summary>
     /// 该轨道的音符集合。使用可变引用以便在移调 / 切换乐器组后
     /// 通过 INotifyPropertyChanged 触发缩略图重绘。
     /// </summary>

@@ -21,8 +21,8 @@
             <Setter Property="BorderThickness" Value="0,0,0,1"/>
             <Setter Property="Padding" Value="10,6"/>
         </Style>
-        <!-- 轨道头 Mute 切换按钮 -->
-        <Style Selector="ToggleButton.mute">
+        <!-- 轨道头 Mute / Solo 切换按钮（共用尺寸样式） -->
+        <Style Selector="ToggleButton.trackToggle">
             <Setter Property="Width" Value="24"/>
             <Setter Property="Height" Value="20"/>
             <Setter Property="Padding" Value="0"/>
@@ -31,8 +31,14 @@
             <Setter Property="HorizontalContentAlignment" Value="Center"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
+        <!-- Mute：选中时红色 -->
         <Style Selector="ToggleButton.mute:checked">
             <Setter Property="Background" Value="#e35555"/>
+            <Setter Property="Foreground" Value="White"/>
+        </Style>
+        <!-- Solo：选中时紫色（参考 TuneLab 的配色 #8754FF） -->
+        <Style Selector="ToggleButton.solo:checked">
+            <Setter Property="Background" Value="#8754ff"/>
             <Setter Property="Foreground" Value="White"/>
         </Style>
     </Window.Styles>
@@ -77,10 +83,6 @@
                 <TextBlock Text="倒计时(秒):" VerticalAlignment="Center" Margin="4,0"/>
                 <NumericUpDown Value="{Binding CountdownSeconds}" Minimum="0" Maximum="10"
                                Increment="1" FormatString="0" Width="100"/>
-
-                <TextBlock Text="倍速:" VerticalAlignment="Center" Margin="12,0,4,0"/>
-                <NumericUpDown Value="{Binding Speed}" Minimum="0.25" Maximum="4"
-                               Increment="0.25" FormatString="0.00" Width="110"/>
             </StackPanel>
         </Border>
 
@@ -116,14 +118,41 @@
             </Grid>
         </Border>
 
-        <!-- 多轨缩略图（固定在钢琴卷帘上方） -->
+        <!-- 多轨缩略图（固定在钢琴卷帘上方）。第一条是固定的“速度轨”，
+             用来展示 SetTempo 标签 + 整体倍速控制；其下才是常规音轨。 -->
         <Border DockPanel.Dock="Top"
                 Background="#17191f"
                 BorderBrush="#2a2d36" BorderThickness="0,0,0,1">
-            <ScrollViewer HorizontalScrollBarVisibility="Disabled"
-                          VerticalScrollBarVisibility="Auto"
-                          MaxHeight="240">
-                <ItemsControl ItemsSource="{Binding Tracks}">
+            <DockPanel>
+                <!-- 速度轨：高度比常规音轨低，仅容纳曲速标签 -->
+                <Grid DockPanel.Dock="Top" ColumnDefinitions="170,*" Height="26">
+                    <Border Grid.Column="0"
+                            Background="#1f222a"
+                            BorderBrush="#2a2d36" BorderThickness="0,0,1,1"
+                            Padding="6,0">
+                        <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                            <TextBlock Text="倍速"
+                                       VerticalAlignment="Center"
+                                       FontSize="11" Foreground="#bcc"/>
+                            <NumericUpDown Value="{Binding Speed}" Minimum="0.25" Maximum="4"
+                                           Increment="0.25" FormatString="0.00"
+                                           Height="22" Width="100"
+                                           FontSize="11" Padding="2,0"
+                                           VerticalContentAlignment="Center"
+                                           ToolTip.Tip="整体演奏倍速：在不改写 BPM 的前提下，按此倍数缩放实际播放速度。"/>
+                        </StackPanel>
+                    </Border>
+                    <ctl:TempoStrip Grid.Column="1"
+                                    Tempos="{Binding Tempos}"
+                                    Duration="{Binding Duration}"
+                                    Playhead="{Binding Playhead}"/>
+                </Grid>
+
+                <!-- 常规音轨缩略图列表 -->
+                <ScrollViewer HorizontalScrollBarVisibility="Disabled"
+                              VerticalScrollBarVisibility="Auto"
+                              MaxHeight="240">
+                    <ItemsControl ItemsSource="{Binding Tracks}">
                     <ItemsControl.ItemTemplate>
                         <DataTemplate DataType="models:MidiTrack">
                             <Grid ColumnDefinitions="170,*" Height="40">
@@ -135,7 +164,7 @@
                                         Tag="{Binding}"
                                         PointerPressed="OnTrackHeadPressed"
                                         Cursor="Hand">
-                                    <Grid ColumnDefinitions="Auto,Auto,*" VerticalAlignment="Center">
+                                    <Grid ColumnDefinitions="Auto,Auto,Auto,*" VerticalAlignment="Center">
                                         <Rectangle Grid.Column="0" Width="4" Height="22"
                                                    VerticalAlignment="Center"
                                                    RadiusX="2" RadiusY="2">
@@ -143,12 +172,17 @@
                                                 <SolidColorBrush Color="{Binding Color}"/>
                                             </Rectangle.Fill>
                                         </Rectangle>
-                                        <ToggleButton Grid.Column="1" Classes="mute"
+                                        <ToggleButton Grid.Column="1" Classes="trackToggle mute"
                                                       IsChecked="{Binding Muted}"
                                                       Content="M"
-                                                      Margin="6,0,6,0"
-                                                      ToolTip.Tip="静音此轨道（仅影响演奏）"/>
-                                        <TextBlock Grid.Column="2"
+                                                      Margin="6,0,2,0"
+                                                      ToolTip.Tip="静音此轨道。当存在 Solo 轨道时，被 Solo 的轨道仍会优先于 Mute 演奏。"/>
+                                        <ToggleButton Grid.Column="2" Classes="trackToggle solo"
+                                                      IsChecked="{Binding Solo}"
+                                                      Content="S"
+                                                      Margin="0,0,6,0"
+                                                      ToolTip.Tip="独奏此轨道。任意一条轨道开启 Solo 后，未 Solo 的轨道都会被屏蔽（即使没有 Mute）。Solo 优先于 Mute。"/>
+                                        <TextBlock Grid.Column="3"
                                                    Text="{Binding Name}"
                                                    VerticalAlignment="Center"
                                                    TextTrimming="CharacterEllipsis"
@@ -169,7 +203,8 @@
                         </DataTemplate>
                     </ItemsControl.ItemTemplate>
                 </ItemsControl>
-            </ScrollViewer>
+                </ScrollViewer>
+            </DockPanel>
         </Border>
 
         <!-- 钢琴卷帘（带倒计时覆盖层） -->

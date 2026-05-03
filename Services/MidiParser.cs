@@ -14,6 +14,9 @@ public static class MidiParser
         public double TotalDuration { get; init; }
         public string FileName { get; init; } = string.Empty;
 
+        /// <summary>整首曲子里全部 SetTempo（曲速变化）事件按时间排序后的列表，用于在速度轨上绘制曲速标签。</summary>
+        public IReadOnlyList<TempoMarker> Tempos { get; init; } = Array.Empty<TempoMarker>();
+
         /// <summary>所有轨道合并后的音符（按开始时间排序）。</summary>
         public IEnumerable<Note> AllNotes => Tracks.SelectMany(t => t.Notes);
     }
@@ -164,9 +167,23 @@ public static class MidiParser
         foreach (var tr in tracks)
             ApplyTranspose(tr.Notes, 0, Instruments.Default);
 
+        // 把曲速点折算成 (秒, BPM) 列表，去掉相邻重复的 BPM。
+        var tempoMarkers = new List<TempoMarker>();
+        double lastBpm = -1;
+        foreach (var (tick, mpqn) in tempos)
+        {
+            if (mpqn <= 0) continue;
+            double bpm = 60_000_000.0 / mpqn;
+            // 同一 BPM 连续出现时只保留首个，避免在速度轨上叠成糊
+            if (Math.Abs(bpm - lastBpm) < 0.001) continue;
+            tempoMarkers.Add(new TempoMarker { Time = TickToSeconds(tick), Bpm = bpm });
+            lastBpm = bpm;
+        }
+
         return new ParseResult
         {
             Tracks = tracks,
+            Tempos = tempoMarkers,
             TotalDuration = total,
             FileName = System.IO.Path.GetFileName(path),
         };

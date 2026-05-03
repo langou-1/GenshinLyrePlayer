@@ -64,17 +64,43 @@ public partial class MainWindowViewModel : ObservableObject
 
     private void OnTrackItemChanged(object? sender, PropertyChangedEventArgs e)
     {
-        // Mute 变化不影响展示，但会影响"自动移调"评估范围与底部统计数字
-        // （总音符数 / 可演奏音符数都只统计未静音轨道），所以需要在此刷新统计。
-        if (e.PropertyName == nameof(MidiTrack.Muted))
+        // Mute / Solo 变化不影响显示，但会改变"哪些轨道实际会被演奏"，
+        // 进而影响自动移调评估范围、底部音符统计数字、以及缩略图上的明暗。
+        // 这里把全局判定结果（IsAudible）一次性刷新到所有轨道，再触发统计。
+        if (e.PropertyName == nameof(MidiTrack.Muted) ||
+            e.PropertyName == nameof(MidiTrack.Solo))
         {
+            UpdateAudibleStates();
             RefreshStats();
+        }
+    }
+
+    /// <summary>
+    /// 综合 Mute / Solo 状态，按 TuneLab 的规则把每条轨道的最终"是否实际演奏"写入
+    /// <see cref="MidiTrack.IsAudible"/>：
+    /// <list type="bullet">
+    ///   <item>只要存在任意一条 Solo=true 的轨道（hasSolo），未 Solo 的轨道就全部静音；</item>
+    ///   <item>没有 Solo 时，普通的 Muted 决定是否静音；</item>
+    ///   <item>同一条轨道上 Solo 优先于 Muted（Solo=true 即可演奏）。</item>
+    /// </list>
+    /// </summary>
+    private void UpdateAudibleStates()
+    {
+        bool hasSolo = false;
+        foreach (var tr in Tracks) { if (tr.Solo) { hasSolo = true; break; } }
+
+        foreach (var tr in Tracks)
+        {
+            bool audible = tr.Solo || (!tr.Muted && !hasSolo);
+            if (tr.IsAudible != audible) tr.IsAudible = audible;
         }
     }
 
     // ===== 基本状态 =====
 
     [ObservableProperty] private IReadOnlyList<Note>? _notes;
+    /// <summary>整首曲子里所有曲速变化标签（用于速度轨）。</summary>
+    [ObservableProperty] private IReadOnlyList<TempoMarker> _tempos = Array.Empty<TempoMarker>();
     [ObservableProperty] private string? _fileName;
     [ObservableProperty] private string? _filePath;
     [ObservableProperty] private double _duration;
@@ -146,6 +172,7 @@ public partial class MainWindowViewModel : ObservableObject
             CountdownText = string.Empty;
             Notes = null;
             SelectedTrack = null;
+            Tempos = Array.Empty<TempoMarker>();
             Tracks.Clear();
             TotalNotes = 0;
             SupportedNotes = 0;
@@ -162,8 +189,13 @@ public partial class MainWindowViewModel : ObservableObject
             FileName = result.FileName;
             Duration = result.TotalDuration;
             Playhead = 0;
+            Tempos = result.Tempos;
 
             foreach (var tr in result.Tracks) Tracks.Add(tr);
+
+            // 新加载的轨道默认 Mute/Solo 都是 false，IsAudible 默认 true，
+            // 这里仍统一刷新一次以防文件解析阶段意外携带状态。
+            UpdateAudibleStates();
 
             // 先选第一个轨道，再按需触发移调重算
             SelectedTrack = Tracks.FirstOrDefault();
@@ -185,12 +217,12 @@ public partial class MainWindowViewModel : ObservableObject
     private void AutoTranspose()
     {
         if (Tracks.Count == 0) return;
-        // 仅对当前未静音的轨道做评估（静音轨不会演奏，所以也不应参与移调判断）。
-        var activeNotes = Tracks.Where(t => !t.Muted).SelectMany(t => t.Notes).ToList();
+        // 仅对当前实际会演奏的轨道做评估（被 Mute 或被其它 Solo 屏蔽的轨道不参与）。
+        var activeNotes = Tracks.Where(t => t.IsAudible).SelectMany(t => t.Notes).ToList();
         int total = activeNotes.Count;
         if (total == 0)
         {
-            StatusText = "所有轨道都已静音，无可评估内容";
+            StatusText = "当前没有可演奏的轨道（请检查 Mute / Solo 状态）";
             return;
         }
 
@@ -242,12 +274,12 @@ public partial class MainWindowViewModel : ObservableObject
         if (Tracks.Count == 0) return;
         if (IsPlaying) return;
 
-        // 演奏时把所有未静音轨道的音符合并后按时间排序。
-        var combined = Tracks.Where(t => !t.Muted).SelectMany(t => t.Notes).ToList();
+        // 演奏时把所有"实际可发声"的轨道（未被 Mute、且未被其它 Solo 屏蔽）合并后按时间排序。
+        var combined = Tracks.Where(t => t.IsAudible).SelectMany(t => t.Notes).ToList();
         combined.Sort((a, b) => a.Start.CompareTo(b.Start));
         if (combined.Count == 0)
         {
-            StatusText = "所有轨道都已静音，无可演奏内容";
+            StatusText = "当前没有可演奏的轨道（请检查 Mute / Solo 状态）";
             return;
         }
 
@@ -306,11 +338,11 @@ public partial class MainWindowViewModel : ObservableObject
 
     private void RefreshStats()
     {
-        // 静音轨道不会被演奏，所以底部"总音符数 / 可演奏音符数"也仅统计未静音的轨道。
+        // 不会被演奏的轨道（Mute 中、或被其它 Solo 屏蔽）不计入底部"总音符数 / 可演奏音符数"。
         int total = 0, supp = 0;
         foreach (var tr in Tracks)
         {
-            if (tr.Muted) continue;
+            if (!tr.IsAudible) continue;
             foreach (var n in tr.Notes)
             {
                 total++;
