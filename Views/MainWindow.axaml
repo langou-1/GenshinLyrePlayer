@@ -6,9 +6,10 @@
         x:Class="GenshinLyrePlayer.Views.MainWindow"
         x:Name="RootWindow"
         x:DataType="vm:MainWindowViewModel"
-        Title="原神琴自动演奏"
+        Title="原琴自动演奏"
         Width="1260" Height="720"
-        MinWidth="1260" MinHeight="540">
+        MinWidth="1260" MinHeight="540"
+        DragDrop.AllowDrop="True">
 
     <Window.Styles>
         <Style Selector="Button.toolbar">

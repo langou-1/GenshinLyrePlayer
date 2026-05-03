@@ -314,8 +314,17 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void Play()
     {
-        if (Tracks.Count == 0) return;
         if (IsPlaying) return;
+        StartPlayback(CountdownSeconds);
+    }
+
+    /// <summary>
+    /// 从当前 <see cref="Playhead"/> 启动 Player。<paramref name="countdownSeconds"/>
+    /// 为 0 时跳过准备倒计时（用于 Seek 等"已经在播放中"的场景）。
+    /// </summary>
+    private void StartPlayback(int countdownSeconds)
+    {
+        if (Tracks.Count == 0) return;
 
         // 演奏时把所有"实际可发声"的轨道（未被 Mute、且未被其它 Solo 屏蔽）合并后按时间排序。
         var combined = Tracks.Where(t => t.IsAudible).SelectMany(t => t.Notes).ToList();
@@ -327,9 +336,11 @@ public partial class MainWindowViewModel : ObservableObject
         }
 
         IsPlaying = true;
-        StatusText = $"从 {FormatTime(Playhead)} 开始演奏（请切换到原神窗口）";
+        StatusText = countdownSeconds > 0
+            ? $"从 {FormatTime(Playhead)} 开始演奏（请切换到原神窗口）"
+            : $"从 {FormatTime(Playhead)} 继续演奏";
         _player.Speed = Speed;
-        _player.Play(combined, Playhead, CountdownSeconds);
+        _player.Play(combined, Playhead, countdownSeconds);
     }
 
     [RelayCommand]
@@ -374,9 +385,16 @@ public partial class MainWindowViewModel : ObservableObject
         bool wasPlaying = IsPlaying;
         if (wasPlaying) _player.Stop();
         Playhead = Math.Clamp(seconds, 0, Math.Max(0, Duration));
-        IsPlaying = false;
         CountdownText = string.Empty;
-        if (wasPlaying) Play();
+        if (wasPlaying)
+        {
+            // 播放过程中 Seek：直接从新位置继续播放，跳过准备倒计时。
+            StartPlayback(0);
+        }
+        else
+        {
+            IsPlaying = false;
+        }
     }
 
     private void RefreshStats()

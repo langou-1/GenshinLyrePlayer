@@ -31,6 +31,10 @@ public partial class MainWindow : Window
         DataContextChanged += (_, _) => HookVm();
         KeyDown += OnHotKey;
 
+        // 拖拽 MIDI 文件到窗口任意位置即可导入
+        AddHandler(DragDrop.DragOverEvent, OnDragOver);
+        AddHandler(DragDrop.DropEvent, OnDrop);
+
         // 安装全局键盘钩子：即使焦点不在本窗口（例如在原神里）也能响应 F8/F9
         Opened += (_, _) =>
         {
@@ -148,6 +152,66 @@ public partial class MainWindow : Window
         RollScroll.Offset = new Vector(newOffsetX, RollScroll.Offset.Y);
 
         e.Handled = true;
+    }
+
+    /// <summary>
+    /// 拖拽悬停：只接受包含文件且其中至少有一个 .mid/.midi 的拖入。
+    /// </summary>
+    private void OnDragOver(object? sender, DragEventArgs e)
+    {
+        if (e.Data.Contains(DataFormats.Files) && TryGetFirstMidiPath(e) != null)
+        {
+            e.DragEffects = DragDropEffects.Copy;
+        }
+        else
+        {
+            e.DragEffects = DragDropEffects.None;
+        }
+        e.Handled = true;
+    }
+
+    /// <summary>
+    /// 拖拽释放：取第一个 MIDI 文件的本地路径并调用 VM 的加载流程。
+    /// </summary>
+    private async void OnDrop(object? sender, DragEventArgs e)
+    {
+        try
+        {
+            var path = TryGetFirstMidiPath(e);
+            if (path != null && Vm != null)
+            {
+                await Vm.LoadMidiAsync(path);
+            }
+        }
+        catch (Exception ex)
+        {
+            if (Vm != null) Vm.StatusText = $"拖入文件失败: {ex.Message}";
+        }
+        finally
+        {
+            e.Handled = true;
+        }
+    }
+
+    /// <summary>
+    /// 从拖拽事件里挑出第一个 .mid/.midi 文件的本地路径；找不到返回 null。
+    /// </summary>
+    private static string? TryGetFirstMidiPath(DragEventArgs e)
+    {
+        var files = e.Data.GetFiles();
+        if (files == null) return null;
+        foreach (var item in files)
+        {
+            var p = item.TryGetLocalPath();
+            if (string.IsNullOrEmpty(p)) continue;
+            var ext = System.IO.Path.GetExtension(p);
+            if (ext.Equals(".mid", StringComparison.OrdinalIgnoreCase) ||
+                ext.Equals(".midi", StringComparison.OrdinalIgnoreCase))
+            {
+                return p;
+            }
+        }
+        return null;
     }
 
     private async void OnOpenClicked(object? sender, RoutedEventArgs e)

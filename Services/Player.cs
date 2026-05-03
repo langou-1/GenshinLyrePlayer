@@ -23,7 +23,12 @@ public sealed class Player : IDisposable
     public bool IsPlaying { get; private set; }
 
     public double Speed { get; set; } = 1.0; // 播放倍速
-    public int HoldMs { get; set; } = 20;    // 按下保持时长（ms）
+    /// <summary>
+    /// 按键按下保持时长的"下限"（毫秒）。实际抬起时间等于音符结束时间，
+    /// 以便实现根据音符时值的长按效果；当音符极短（短于该下限）时使用此值兜底，
+    /// 防止部分按键事件丢失。
+    /// </summary>
+    public int HoldMs { get; set; } = 20;
 
     public void Play(IReadOnlyList<Note> allNotes, double fromSeconds, int countdownSeconds)
     {
@@ -80,6 +85,7 @@ public sealed class Player : IDisposable
 
     private void Run(IReadOnlyList<Note> allNotes, double fromSeconds, int countdownSeconds, CancellationToken ct)
     {
+        bool naturalFinish = false;
         try
         {
             // 倒计时
@@ -129,8 +135,21 @@ public sealed class Player : IDisposable
                     var n = upcoming[idx++];
                     if (n.Key is char k)
                     {
+                        // 若同一按键仍处于按下状态，先抬起再重新按下，
+                        // 确保游戏识别为一次新的音符触发，而不是被当作系统级自动重复。
+                        for (int i = active.Count - 1; i >= 0; i--)
+                        {
+                            if (active[i].key == k)
+                            {
+                                KeyboardSimulator.Release(k);
+                                active.RemoveAt(i);
+                            }
+                        }
                         KeyboardSimulator.Press(k);
-                        double hold = Math.Max(HoldMs / 1000.0, Math.Min(n.Duration, 0.08));
+                        // 抬起时间 = 音符结束时间（秒），以匹配音符时值实现长按；
+                        // HoldMs 作为下限，避免极短音符没有可靠的按下/抬起间隔。
+                        double minHold = Math.Max(0, HoldMs) / 1000.0;
+                        double hold = Math.Max(minHold, n.Duration);
                         active.Add((now + hold, k));
                     }
                 }
@@ -142,7 +161,7 @@ public sealed class Player : IDisposable
                     nextPlayheadEmit += 1.0 / 30.0;
                 }
 
-                if (idx >= upcoming.Count && active.Count == 0) break;
+                if (idx >= upcoming.Count && active.Count == 0) { naturalFinish = true; break; }
 
                 // 精准但低占用的等待：根据下一个事件距离决定 sleep
                 double nextEvent = double.PositiveInfinity;
@@ -161,7 +180,11 @@ public sealed class Player : IDisposable
         finally
         {
             IsPlaying = false;
-            Finished?.Invoke();
+            // 仅在自然播放完毕时通知"演奏结束"。
+            // 主动 Stop() / Seek() 引发的取消不应触发 Finished，否则会被
+            // 异步 dispatch 到 UI 线程后覆盖刚刚 Seek 重新启动播放时设置的 IsPlaying=true，
+            // 造成播放按钮状态错乱。
+            if (naturalFinish) Finished?.Invoke();
         }
     }
 
