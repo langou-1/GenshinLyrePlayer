@@ -9,6 +9,7 @@ using Avalonia.Markup.Xaml;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using GenshinLyrePlayer.Controls;
+using GenshinLyrePlayer.Models;
 using GenshinLyrePlayer.Services;
 using GenshinLyrePlayer.ViewModels;
 
@@ -24,6 +25,8 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
         Roll.SeekRequested += OnRollSeek;
+        RollScroll.ScrollChanged += (_, _) => UpdateViewport();
+        RollScroll.SizeChanged += (_, _) => UpdateViewport();
         DataContextChanged += (_, _) => HookVm();
         KeyDown += OnHotKey;
 
@@ -32,6 +35,7 @@ public partial class MainWindow : Window
         {
             GlobalKeyHook.KeyDown += OnGlobalKey;
             GlobalKeyHook.Install();
+            UpdateViewport();
         };
         Closed += (_, _) =>
         {
@@ -42,16 +46,15 @@ public partial class MainWindow : Window
 
     private void OnGlobalKey(uint vk)
     {
-        // 钩子回调可能在非 UI 线程，切回 UI 线程处理
         Dispatcher.UIThread.Post(() =>
         {
             if (Vm is null) return;
             switch (vk)
             {
-                case VK_F8:  // 播放 / 暂停 切换
+                case VK_F8:
                     Vm.TogglePlayPause();
                     break;
-                case VK_F9:  // 停止
+                case VK_F9:
                     Vm.StopCommand.Execute(null);
                     break;
             }
@@ -67,7 +70,26 @@ public partial class MainWindow : Window
         {
             if (e.PropertyName == nameof(MainWindowViewModel.Playhead))
                 Dispatcher.UIThread.Post(AutoScrollToPlayhead);
+            else if (e.PropertyName == nameof(MainWindowViewModel.Duration)
+                  || e.PropertyName == nameof(MainWindowViewModel.PixelsPerSecond))
+                Dispatcher.UIThread.Post(UpdateViewport);
         };
+        UpdateViewport();
+    }
+
+    /// <summary>把 ScrollViewer 当前的可见时间区间同步到 VM，驱动缩略图上视野框的绘制。</summary>
+    private void UpdateViewport()
+    {
+        if (Vm is null) return;
+        double pps = Math.Max(0.001, Roll.PixelsPerSecond);
+        double start = RollScroll.Offset.X / pps;
+        double viewWSec = RollScroll.Viewport.Width / pps;
+        double end = start + viewWSec;
+
+        // 若钢琴卷帘总宽大于实际可展示区域，末端可能超过 Duration；这里不做 clamp，
+        // 让缩略图自己 clamp，保持与实际滚动位置一致。
+        Vm.ViewportStart = start;
+        Vm.ViewportEnd = end;
     }
 
     private void AutoScrollToPlayhead()
@@ -82,15 +104,45 @@ public partial class MainWindow : Window
             RollScroll.Offset = new Vector(Math.Max(0, x - 20), RollScroll.Offset.Y);
     }
 
-    private void OnRollSeek(double seconds)
-    {
-        Vm?.Seek(seconds);
-    }
+    private void OnRollSeek(double seconds) => Vm?.Seek(seconds);
 
     private void OnTimelineReleased(object? sender, PointerReleasedEventArgs e)
     {
         if (Vm is null) return;
         Vm.Seek(TimelineSlider.Value);
+    }
+
+    // Ctrl + 滚轮：以鼠标位置为中心缩放钢琴卷帘
+    private void OnRollWheel(object? sender, PointerWheelEventArgs e)
+    {
+        if (Vm is null) return;
+        if ((e.KeyModifiers & KeyModifiers.Control) == 0) return;
+
+        const double minPps = 20;
+        const double maxPps = 600;
+
+        double oldPps = Vm.PixelsPerSecond;
+        double factor = e.Delta.Y > 0 ? 1.15 : 1.0 / 1.15;
+        double newPps = Math.Clamp(oldPps * factor, minPps, maxPps);
+        if (Math.Abs(newPps - oldPps) < 0.01)
+        {
+            e.Handled = true;
+            return;
+        }
+
+        double mouseX = e.GetPosition(RollScroll).X;
+        double ratio = newPps / oldPps;
+        double oldOffsetX = RollScroll.Offset.X;
+        double newOffsetX = Math.Max(0, (oldOffsetX + mouseX) * ratio - mouseX);
+
+        Vm.PixelsPerSecond = newPps;
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            RollScroll.Offset = new Vector(newOffsetX, RollScroll.Offset.Y);
+        }, DispatcherPriority.Background);
+
+        e.Handled = true;
     }
 
     private async void OnOpenClicked(object? sender, RoutedEventArgs e)
@@ -136,5 +188,47 @@ public partial class MainWindow : Window
                 e.Handled = true;
                 break;
         }
+    }
+
+    // ========== 多轨交互 ==========
+
+    /// <summary>
+    /// 点击轨道头：只切换到该轨道，不移动视野。
+    /// </summary>
+    private void OnTrackHeadPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (Vm is null) return;
+        if (sender is Control c && c.Tag is MidiTrack track)
+        {
+            Vm.SelectedTrack = track;
+            e.Handled = true;
+        }
+    }
+
+    /// <summary>
+    /// 轨道缩略图上的点击（视野框外）：同时切换轨道并把视野滚到此处。
+    /// </summary>
+    private void OnStripSeekAndActivate(MidiTrack track, double newStartSec)
+    {
+        if (Vm is null) return;
+        Vm.SelectedTrack = track;
+        ScrollRollTo(newStartSec);
+    }
+
+    /// <summary>
+    /// 拖拽视野框：只移动视野，不改变当前轨道（拖拽只在当前轨道可以发起）。
+    /// </summary>
+    private void OnStripViewportDragTo(double newStartSec)
+    {
+        ScrollRollTo(newStartSec);
+    }
+
+    private void ScrollRollTo(double newStartSec)
+    {
+        if (Vm is null) return;
+        double pps = Math.Max(0.001, Roll.PixelsPerSecond);
+        double maxOff = Math.Max(0, RollScroll.Extent.Width - RollScroll.Viewport.Width);
+        double x = Math.Clamp(newStartSec * pps, 0, maxOff);
+        RollScroll.Offset = new Vector(x, RollScroll.Offset.Y);
     }
 }

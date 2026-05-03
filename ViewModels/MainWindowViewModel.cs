@@ -1,5 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using System.ComponentModel;
 using System.Linq;
 using System.Threading.Tasks;
 using Avalonia.Threading;
@@ -30,7 +33,41 @@ public partial class MainWindowViewModel : ObservableObject
         {
             CountdownText = sec > 0 ? $"准备演奏: {sec}" : string.Empty;
         });
+
+        Tracks.CollectionChanged += OnTracksCollectionChanged;
     }
+
+    // ===== 多轨 =====
+
+    /// <summary>所有已加载的轨道（解析后填充）。</summary>
+    public ObservableCollection<MidiTrack> Tracks { get; } = new();
+
+    /// <summary>当前在钢琴卷帘中显示的轨道。</summary>
+    [ObservableProperty] private MidiTrack? _selectedTrack;
+
+    /// <summary>钢琴卷帘的可见时间范围，由 View 层根据 ScrollViewer 更新。</summary>
+    [ObservableProperty] private double _viewportStart;
+    [ObservableProperty] private double _viewportEnd;
+
+    partial void OnSelectedTrackChanged(MidiTrack? value)
+    {
+        Notes = value?.Notes;
+    }
+
+    private void OnTracksCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        if (e.OldItems != null)
+            foreach (MidiTrack t in e.OldItems) t.PropertyChanged -= OnTrackItemChanged;
+        if (e.NewItems != null)
+            foreach (MidiTrack t in e.NewItems) t.PropertyChanged += OnTrackItemChanged;
+    }
+
+    private void OnTrackItemChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        // Mute 变化不影响展示，只在下次 Play 时生效。这里无需额外处理。
+    }
+
+    // ===== 基本状态 =====
 
     [ObservableProperty] private IReadOnlyList<Note>? _notes;
     [ObservableProperty] private string? _fileName;
@@ -45,13 +82,10 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private string? _countdownText;
     [ObservableProperty] private string? _statusText = "就绪";
 
-    /// <summary>可选的乐器组列表（下拉框数据源）。</summary>
     public IReadOnlyList<InstrumentGroup> AvailableInstrumentGroups { get; } = Instruments.Groups;
 
-    /// <summary>当前选中的乐器组。切换时会用新映射重新计算所有音符的可演奏状态。</summary>
     [ObservableProperty] private InstrumentGroup _selectedInstrumentGroup = Instruments.Default;
 
-    /// <summary>播放按钮应显示的文字，随 IsPlaying 自动变化（绑定用）。</summary>
     public string PlayPauseButtonText => IsPlaying ? "⏸ 暂停 (F8)" : "▶ 播放 (F8)";
     public string PlayPauseButtonTooltip => IsPlaying
         ? "暂停演奏，保留当前播放位置，再次按可继续(全局热键 F8)"
@@ -62,6 +96,7 @@ public partial class MainWindowViewModel : ObservableObject
         OnPropertyChanged(nameof(PlayPauseButtonText));
         OnPropertyChanged(nameof(PlayPauseButtonTooltip));
     }
+
     [ObservableProperty] private int _totalNotes;
     [ObservableProperty] private int _supportedNotes;
     [ObservableProperty] private int _unsupportedNotes;
@@ -71,10 +106,7 @@ public partial class MainWindowViewModel : ObservableObject
     partial void OnPlayheadChanged(double value) => OnPropertyChanged(nameof(PlayheadText));
     partial void OnDurationChanged(double value) => OnPropertyChanged(nameof(PlayheadText));
 
-    partial void OnTransposeChanged(int value)
-    {
-        ReapplyMapping();
-    }
+    partial void OnTransposeChanged(int value) => ReapplyMapping();
 
     partial void OnSelectedInstrumentGroupChanged(InstrumentGroup value)
     {
@@ -83,13 +115,17 @@ public partial class MainWindowViewModel : ObservableObject
             StatusText = $"已切换到 {value.Name}（{value.Description}）";
     }
 
-    /// <summary>基于当前 Transpose + SelectedInstrumentGroup 重算 Key / Supported。</summary>
+    /// <summary>基于当前 Transpose + SelectedInstrumentGroup 重算所有轨道的 Key / Supported。</summary>
     private void ReapplyMapping()
     {
-        if (Notes is null || Notes.Count == 0) return;
-        MidiParser.ApplyTranspose(Notes, Transpose, SelectedInstrumentGroup);
-        // 重新赋一个新的 List 引用，触发 UI 重绘
-        Notes = new List<Note>(Notes);
+        if (Tracks.Count == 0) return;
+        foreach (var tr in Tracks)
+        {
+            MidiParser.ApplyTranspose(tr.Notes, Transpose, SelectedInstrumentGroup);
+            // 重新赋值触发 Notes 变更事件，让绑定的控件（缩略图/钢琴卷帘）重绘。
+            tr.Notes = new List<Note>(tr.Notes);
+        }
+        if (SelectedTrack != null) Notes = SelectedTrack.Notes;
         RefreshStats();
     }
 
@@ -99,18 +135,18 @@ public partial class MainWindowViewModel : ObservableObject
     {
         try
         {
-            // 切换曲谱前先停止演奏并清理上一次的曲谱引用，避免内存持续增长。
-            // （若不清理，Player 内部 Task 闭包与控件绑定仍可能引用旧音符列表。）
+            // 切换曲谱前先停止演奏并清理上一次的曲谱引用
             _player.Stop();
             IsPlaying = false;
             CountdownText = string.Empty;
             Notes = null;
+            SelectedTrack = null;
+            Tracks.Clear();
             TotalNotes = 0;
             SupportedNotes = 0;
             UnsupportedNotes = 0;
             Playhead = 0;
             Duration = 0;
-            // 主动触发一次回收，尽快释放大型音符集合
             GC.Collect();
             GC.WaitForPendingFinalizers();
             GC.Collect();
@@ -122,18 +158,17 @@ public partial class MainWindowViewModel : ObservableObject
             Duration = result.TotalDuration;
             Playhead = 0;
 
-            // 避免调用两次 ReapplyMapping：若当前 Transpose 非 0，赋 0 会自动触发 OnTransposeChanged。
+            foreach (var tr in result.Tracks) Tracks.Add(tr);
+
+            // 先选第一个轨道，再按需触发移调重算
+            SelectedTrack = Tracks.FirstOrDefault();
+
             if (Transpose != 0)
-            {
-                Notes = result.Notes;
                 Transpose = 0; // 触发 OnTransposeChanged → ReapplyMapping
-            }
             else
-            {
-                Notes = result.Notes;
                 ReapplyMapping();
-            }
-            StatusText = $"已加载 {result.Notes.Count} 个音符，时长 {FormatTime(Duration)}";
+
+            StatusText = $"已加载 {Tracks.Count} 条轨道 / {TotalNotes} 个音符，时长 {FormatTime(Duration)}";
         }
         catch (Exception ex)
         {
@@ -144,25 +179,24 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void AutoTranspose()
     {
-        if (Notes is null || Notes.Count == 0) return;
-        var notesList = Notes.ToList();
-        int total = notesList.Count;
+        if (Tracks.Count == 0) return;
+        // 仅对当前未静音的轨道做评估（静音轨不会演奏，不需要考虑）。
+        var activeNotes = Tracks.Where(t => !t.Muted).SelectMany(t => t.Notes).ToList();
+        if (activeNotes.Count == 0) activeNotes = Tracks.SelectMany(t => t.Notes).ToList();
+        int total = activeNotes.Count;
+        if (total == 0) return;
 
-        // 先看当前乐器组的最佳移调能达成多高的可演奏率；若仍有未覆盖的音，
-        // 则尝试所有乐器组，挑覆盖最多者。
-        var inCurrent = MidiParser.FindBestTransposeWithScore(notesList, SelectedInstrumentGroup);
+        var inCurrent = MidiParser.FindBestTransposeWithScore(activeNotes, SelectedInstrumentGroup);
 
         if (inCurrent.Score >= total)
         {
-            // 当前乐器组即可完整演奏
             Transpose = inCurrent.Shift;
             StatusText = $"已自动移调 {Format(inCurrent.Shift)} 半音（{SelectedInstrumentGroup.Name}，全部 {total} 音均可演奏）";
             return;
         }
 
-        var best = MidiParser.FindBestTransposeAcrossGroups(notesList, AvailableInstrumentGroups, SelectedInstrumentGroup);
+        var best = MidiParser.FindBestTransposeAcrossGroups(activeNotes, AvailableInstrumentGroups, SelectedInstrumentGroup);
 
-        // 如果跨乐器组的最佳得分不比当前组高，就沿用当前组的结果
         if (best.Score <= inCurrent.Score)
         {
             Transpose = inCurrent.Shift;
@@ -170,7 +204,6 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        // 切换到更合适的乐器组
         bool switched = best.Group != SelectedInstrumentGroup;
         if (switched) SelectedInstrumentGroup = best.Group;
         Transpose = best.Shift;
@@ -198,15 +231,24 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void Play()
     {
-        if (Notes is null || Notes.Count == 0) return;
-        if (IsPlaying) return; // 已在播放中，忽略
+        if (Tracks.Count == 0) return;
+        if (IsPlaying) return;
+
+        // 演奏时把所有未静音轨道的音符合并后按时间排序。
+        var combined = Tracks.Where(t => !t.Muted).SelectMany(t => t.Notes).ToList();
+        combined.Sort((a, b) => a.Start.CompareTo(b.Start));
+        if (combined.Count == 0)
+        {
+            StatusText = "所有轨道都已静音，无可演奏内容";
+            return;
+        }
+
         IsPlaying = true;
         StatusText = $"从 {FormatTime(Playhead)} 开始演奏（请切换到原神窗口）";
         _player.Speed = Speed;
-        _player.Play(Notes.ToList(), Playhead, CountdownSeconds);
+        _player.Play(combined, Playhead, CountdownSeconds);
     }
 
-    /// <summary>暂停：停止演奏但保留当前播放位置，再次点击播放可从此处继续。</summary>
     [RelayCommand]
     private void Pause()
     {
@@ -217,7 +259,6 @@ public partial class MainWindowViewModel : ObservableObject
         StatusText = $"已暂停于 {FormatTime(Playhead)}";
     }
 
-    /// <summary>播放/暂停 切换（工具栏按钮 + 全局热键 F8 都走这里）。</summary>
     [RelayCommand]
     public void TogglePlayPause()
     {
@@ -257,10 +298,15 @@ public partial class MainWindowViewModel : ObservableObject
 
     private void RefreshStats()
     {
-        int total = Notes?.Count ?? 0;
-        int supp = 0;
-        if (Notes != null)
-            foreach (var n in Notes) if (n.Supported) supp++;
+        int total = 0, supp = 0;
+        foreach (var tr in Tracks)
+        {
+            foreach (var n in tr.Notes)
+            {
+                total++;
+                if (n.Supported) supp++;
+            }
+        }
         TotalNotes = total;
         SupportedNotes = supp;
         UnsupportedNotes = total - supp;

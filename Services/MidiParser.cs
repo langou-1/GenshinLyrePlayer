@@ -10,42 +10,60 @@ public static class MidiParser
 {
     public sealed class ParseResult
     {
-        public List<Note> Notes { get; init; } = new();
+        public List<MidiTrack> Tracks { get; init; } = new();
         public double TotalDuration { get; init; }
         public string FileName { get; init; } = string.Empty;
+
+        /// <summary>所有轨道合并后的音符（按开始时间排序）。</summary>
+        public IEnumerable<Note> AllNotes => Tracks.SelectMany(t => t.Notes);
     }
 
     /// <summary>自动移调的结果：最佳乐器组 + 最佳移调 + 可演奏音符数。</summary>
     public readonly record struct TransposeResult(InstrumentGroup Group, int Shift, int Score);
 
-    /// <summary>从 MIDI 文件中提取所有音符，按时间升序返回。</summary>
+    /// <summary>缩略图配色盘（ARGB，带 0xFF 不透明 alpha）。</summary>
+    private static readonly uint[] TrackColors =
+    {
+        0xFF5AC8F0, // 青蓝
+        0xFFF0C05A, // 橙黄
+        0xFF8EE05A, // 草绿
+        0xFFF08AB0, // 粉红
+        0xFFB388FF, // 紫
+        0xFFFF8A65, // 橘红
+        0xFF4DD0E1, // 青绿
+        0xFFF06292, // 洋红
+        0xFFAED581, // 浅绿
+        0xFFFFD54F, // 金
+        0xFF9575CD, // 薰衣草
+        0xFF64B5F6, // 天蓝
+    };
+
+    /// <summary>
+    /// 从 MIDI 文件中按“轨”拆分音符。
+    /// - 对于多轨 MIDI (type 1)，每个 MIDI track 对应一条轨道；
+    /// - 对于单轨 MIDI (type 0)，若出现多个通道则按通道拆分。
+    /// 没有任何音符的 track（纯 meta）会被忽略。
+    /// </summary>
     public static ParseResult Parse(string path)
     {
-        // strictChecking = false，尽量宽容地读文件。
         var midiFile = new MidiFile(path, false);
         int ppq = midiFile.DeltaTicksPerQuarterNote;
         if (ppq <= 0) ppq = 480;
 
-        // 1. 收集所有 tempo 变化点（跨全部 track，按绝对 tick 合并）。
+        // 1. 收集全局 tempo 变化点（跨全部 track）。
         var tempos = new List<(long Tick, int Mpqn)>();
         foreach (var track in midiFile.Events)
         {
             foreach (var e in track)
             {
                 if (e is TempoEvent te)
-                {
                     tempos.Add((te.AbsoluteTime, te.MicrosecondsPerQuarterNote));
-                }
             }
         }
         tempos.Sort((a, b) => a.Tick.CompareTo(b.Tick));
-        // 默认 120 BPM（500000 µs/四分音符）。
         if (tempos.Count == 0 || tempos[0].Tick > 0)
-        {
-            tempos.Insert(0, (0, 500000));
-        }
+            tempos.Insert(0, (0, 500000)); // 默认 120 BPM
 
-        // 2. 将绝对 tick 转换为秒（考虑中途 tempo 变化）。
         double TickToSeconds(long tick)
         {
             if (tick <= 0) return 0;
@@ -64,15 +82,25 @@ public static class MidiParser
             return seconds;
         }
 
-        // 3. 遍历所有 NoteOnEvent，拿到 start/length 并换算成秒。
-        var result = new List<Note>();
+        // 2. 每个 track 独立收集 Name + Notes。
+        var tracks = new List<MidiTrack>();
         double total = 0;
 
-        foreach (var track in midiFile.Events)
+        for (int t = 0; t < midiFile.Events.Tracks; t++)
         {
-            foreach (var e in track)
+            var trackEvents = midiFile.Events[t];
+            string? trackName = null;
+            var notes = new List<Note>();
+
+            foreach (var e in trackEvents)
             {
-                if (e is NoteOnEvent noteOn && noteOn.OffEvent != null && noteOn.Velocity > 0)
+                if (e is TextEvent te &&
+                    te.MetaEventType == MetaEventType.SequenceTrackName &&
+                    string.IsNullOrEmpty(trackName))
+                {
+                    trackName = te.Text;
+                }
+                else if (e is NoteOnEvent noteOn && noteOn.OffEvent != null && noteOn.Velocity > 0)
                 {
                     long startTick = noteOn.AbsoluteTime;
                     long endTick = noteOn.OffEvent.AbsoluteTime;
@@ -83,7 +111,7 @@ public static class MidiParser
                     double dur = end - start;
                     if (dur < 0.02) dur = 0.02;
 
-                    result.Add(new Note
+                    notes.Add(new Note
                     {
                         OriginalPitch = noteOn.NoteNumber,
                         Start = start,
@@ -95,22 +123,56 @@ public static class MidiParser
                     if (start + dur > total) total = start + dur;
                 }
             }
+
+            if (notes.Count == 0) continue;
+            notes.Sort((a, b) => a.Start.CompareTo(b.Start));
+
+            int idx = tracks.Count;
+            tracks.Add(new MidiTrack
+            {
+                Index = idx,
+                Name = string.IsNullOrWhiteSpace(trackName) ? $"Track {idx + 1}" : trackName!.Trim(),
+                Notes = notes,
+                ColorArgb = TrackColors[idx % TrackColors.Length],
+            });
         }
 
-        result.Sort((a, b) => a.Start.CompareTo(b.Start));
-        ApplyTranspose(result, 0, Instruments.Default);
+        // 单轨多通道：按 channel 拆分
+        if (tracks.Count == 1)
+        {
+            var only = tracks[0];
+            var channels = only.Notes.Select(n => n.Channel).Distinct().OrderBy(c => c).ToList();
+            if (channels.Count > 1)
+            {
+                tracks.Clear();
+                foreach (var ch in channels)
+                {
+                    var chNotes = only.Notes.Where(n => n.Channel == ch).ToList();
+                    int idx = tracks.Count;
+                    tracks.Add(new MidiTrack
+                    {
+                        Index = idx,
+                        Name = ch == 10 ? $"Drums (Ch {ch})" : $"Channel {ch}",
+                        Notes = chNotes,
+                        ColorArgb = TrackColors[idx % TrackColors.Length],
+                    });
+                }
+            }
+        }
+
+        // 应用默认映射（无移调）
+        foreach (var tr in tracks)
+            ApplyTranspose(tr.Notes, 0, Instruments.Default);
 
         return new ParseResult
         {
-            Notes = result,
+            Tracks = tracks,
             TotalDuration = total,
             FileName = System.IO.Path.GetFileName(path),
         };
     }
 
-    /// <summary>
-    /// 对所有音符应用半音数移调 + 指定乐器组；更新 EffectivePitch / Supported / Key。
-    /// </summary>
+    /// <summary>对所有音符应用半音数移调 + 指定乐器组。</summary>
     public static void ApplyTranspose(IEnumerable<Note> notes, int semitones, InstrumentGroup group)
     {
         foreach (var n in notes)
@@ -122,18 +184,9 @@ public static class MidiParser
         }
     }
 
-    /// <summary>
-    /// 在 [-36,+36] 范围内寻找让指定乐器组可演奏音符数最多的移调值。
-    /// 若得分相同，优先移调幅度更小的结果。
-    /// </summary>
     public static int FindBestTranspose(IList<Note> notes, InstrumentGroup group)
-    {
-        return FindBestTransposeWithScore(notes, group).Shift;
-    }
+        => FindBestTransposeWithScore(notes, group).Shift;
 
-    /// <summary>
-    /// 与 <see cref="FindBestTranspose(IList{Note}, InstrumentGroup)"/> 相同，但同时返回得分。
-    /// </summary>
     public static TransposeResult FindBestTransposeWithScore(IList<Note> notes, InstrumentGroup group)
     {
         if (notes.Count == 0) return new TransposeResult(group, 0, 0);
@@ -160,14 +213,6 @@ public static class MidiParser
         return new TransposeResult(group, bestShift, bestScore);
     }
 
-    /// <summary>
-    /// 跨多个乐器组寻找最佳 (组, 移调) 组合。
-    /// 优先级：
-    ///   1. 可演奏音符数更多者胜出；
-    ///   2. 若可演奏数相同，优先保留 <paramref name="preferred"/>；
-    ///   3. 再相同，优先移调幅度更小者。
-    /// 这样「如果当前组没有合适移调，则自动切换到其他组」的语义得到保证。
-    /// </summary>
     public static TransposeResult FindBestTransposeAcrossGroups(
         IList<Note> notes,
         IEnumerable<InstrumentGroup> groups,
