@@ -27,6 +27,7 @@ public partial class MainWindow : Window
         Roll.SeekRequested += OnRollSeek;
         RollScroll.ScrollChanged += (_, _) => UpdateViewport();
         RollScroll.SizeChanged += (_, _) => UpdateViewport();
+        TempoStripCtl.BpmChangeRequested += OnTempoBpmChangeRequested;
         DataContextChanged += (_, _) => HookVm();
         KeyDown += OnHotKey;
 
@@ -221,6 +222,15 @@ public partial class MainWindow : Window
     private void OnStripViewportDragTo(double newStartSec)
     {
         ScrollRollTo(newStartSec);
+    }
+
+    /// <summary>
+    /// 速度轨上完成 BPM 编辑：把 (marker, newBpm) 透传给 ViewModel；
+    /// 真正的 TempoManager.SetBpm + 重算 Note 秒时间在 VM 里完成。
+    /// </summary>
+    private void OnTempoBpmChangeRequested(Models.TempoMarker marker, double newBpm)
+    {
+        Vm?.RequestBpmChange(marker, newBpm);
     }
 
     private void ScrollRollTo(double newStartSec)

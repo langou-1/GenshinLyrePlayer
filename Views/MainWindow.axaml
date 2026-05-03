@@ -143,6 +143,7 @@
                         </StackPanel>
                     </Border>
                     <ctl:TempoStrip Grid.Column="1"
+                                    Name="TempoStripCtl"
                                     Tempos="{Binding Tempos}"
                                     Duration="{Binding Duration}"
                                     Playhead="{Binding Playhead}"/>

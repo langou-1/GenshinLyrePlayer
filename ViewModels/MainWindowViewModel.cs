@@ -99,8 +99,19 @@ public partial class MainWindowViewModel : ObservableObject
     // ===== 基本状态 =====
 
     [ObservableProperty] private IReadOnlyList<Note>? _notes;
-    /// <summary>整首曲子里所有曲速变化标签（用于速度轨）。</summary>
+    /// <summary>
+    /// 整首曲子里所有曲速变化标签（用于速度轨）。
+    /// 实际数据由 <see cref="_tempoManager"/> 持有并维护，本字段只是其 Markers 的快照引用，
+    /// 在 BPM 被编辑后会被重新赋值（new List 包一层）以触发绑定的 TempoStrip 重绘。
+    /// </summary>
     [ObservableProperty] private IReadOnlyList<TempoMarker> _tempos = Array.Empty<TempoMarker>();
+
+    /// <summary>当前曲子的曲速管理器；切换 MIDI 时整体替换。</summary>
+    private TempoManager? _tempoManager;
+
+    /// <summary>所有轨道里最大的 NoteEnd 的 tick 位置，用于在 BPM 变化后重算总时长。</summary>
+    private long _maxEndTick;
+
     [ObservableProperty] private string? _fileName;
     [ObservableProperty] private string? _filePath;
     [ObservableProperty] private double _duration;
@@ -173,6 +184,12 @@ public partial class MainWindowViewModel : ObservableObject
             Notes = null;
             SelectedTrack = null;
             Tempos = Array.Empty<TempoMarker>();
+            if (_tempoManager != null)
+            {
+                _tempoManager.Changed -= OnTempoManagerChanged;
+                _tempoManager = null;
+            }
+            _maxEndTick = 0;
             Tracks.Clear();
             TotalNotes = 0;
             SupportedNotes = 0;
@@ -187,9 +204,12 @@ public partial class MainWindowViewModel : ObservableObject
             var result = await Task.Run(() => MidiParser.Parse(path));
             FilePath = path;
             FileName = result.FileName;
+            _tempoManager = result.TempoManager;
+            _tempoManager.Changed += OnTempoManagerChanged;
+            _maxEndTick = result.MaxEndTick;
             Duration = result.TotalDuration;
             Playhead = 0;
-            Tempos = result.Tempos;
+            Tempos = new List<TempoMarker>(_tempoManager.Markers);
 
             foreach (var tr in result.Tracks) Tracks.Add(tr);
 
@@ -361,5 +381,66 @@ public partial class MainWindowViewModel : ObservableObject
         return $"{total / 60:00}:{total % 60:00}";
     }
 
-    public void Shutdown() => _player.Dispose();
+    // ===== 曲速编辑 =====
+
+    /// <summary>
+    /// View 层把用户在速度轨上敲出的新 BPM 转交给 ViewModel：
+    /// 修改前先暂停演奏（避免 Player 线程读到一半被改的 Notes），然后让 TempoManager 写入新值，
+    /// 它的 Changed 事件会回到 <see cref="OnTempoManagerChanged"/> 重算所有 Note 的秒时间。
+    /// </summary>
+    public void RequestBpmChange(TempoMarker marker, double newBpm)
+    {
+        if (_tempoManager == null) return;
+        bool wasPlaying = IsPlaying;
+        if (wasPlaying)
+        {
+            _player.Stop();
+            IsPlaying = false;
+            CountdownText = string.Empty;
+        }
+        _tempoManager.SetBpm(marker, newBpm);
+        // 这里故意不自动恢复播放：BPM 变化后用户可能想确认下结果，再手动按 F8 继续。
+    }
+
+    /// <summary>TempoManager 的 BPM 改写后的统一刷新流水：保持 tick 不变 → 重新折算秒。</summary>
+    private void OnTempoManagerChanged()
+    {
+        if (_tempoManager == null) return;
+
+        // 保持播放头/视野的"音乐位置"（tick）不变，编辑前后 Playhead/视野显示不会跳。
+        long playheadTick = _tempoManager.SecondsToTick(Playhead);
+        long viewportStartTick = _tempoManager.SecondsToTick(ViewportStart);
+        long viewportEndTick = _tempoManager.SecondsToTick(ViewportEnd);
+
+        MidiParser.RecomputeNoteTimes(Tracks, _tempoManager);
+
+        // 重算总时长
+        Duration = _tempoManager.TickToSeconds(_maxEndTick);
+
+        // tick → 秒 同步回播放头/视野
+        Playhead = _tempoManager.TickToSeconds(playheadTick);
+        ViewportStart = _tempoManager.TickToSeconds(viewportStartTick);
+        ViewportEnd = _tempoManager.TickToSeconds(viewportEndTick);
+
+        // 触发 Notes 引用变更，让钢琴卷帘 / 缩略图重绘（音符的 Start/Duration 已经原地刷新）
+        foreach (var tr in Tracks)
+            tr.Notes = new List<Note>(tr.Notes);
+        if (SelectedTrack != null)
+            Notes = SelectedTrack.Notes;
+
+        // 触发 TempoStrip 重绘（Markers 的 Time 也都被重算了）
+        Tempos = new List<TempoMarker>(_tempoManager.Markers);
+
+        StatusText = $"已修改曲速 → 总时长 {FormatTime(Duration)}";
+    }
+
+    public void Shutdown()
+    {
+        if (_tempoManager != null)
+        {
+            _tempoManager.Changed -= OnTempoManagerChanged;
+            _tempoManager = null;
+        }
+        _player.Dispose();
+    }
 }

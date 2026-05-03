@@ -14,8 +14,11 @@ public static class MidiParser
         public double TotalDuration { get; init; }
         public string FileName { get; init; } = string.Empty;
 
-        /// <summary>整首曲子里全部 SetTempo（曲速变化）事件按时间排序后的列表，用于在速度轨上绘制曲速标签。</summary>
-        public IReadOnlyList<TempoMarker> Tempos { get; init; } = Array.Empty<TempoMarker>();
+        /// <summary>整首曲子的曲速管理器。在用户编辑 BPM 后，所有 Note 的秒时间会基于它重算。</summary>
+        public TempoManager TempoManager { get; init; } = new(480);
+
+        /// <summary>所有轨道里最大的 (StartTick + DurationTick)，用于在 BPM 变更后重算 <see cref="TotalDuration"/>。</summary>
+        public long MaxEndTick { get; init; }
 
         /// <summary>所有轨道合并后的音符（按开始时间排序）。</summary>
         public IEnumerable<Note> AllNotes => Tracks.SelectMany(t => t.Notes);
@@ -42,10 +45,14 @@ public static class MidiParser
     };
 
     /// <summary>
-    /// 从 MIDI 文件中按“轨”拆分音符。
+    /// 从 MIDI 文件中按"轨"拆分音符。
     /// - 对于多轨 MIDI (type 1)，每个 MIDI track 对应一条轨道；
     /// - 对于单轨 MIDI (type 0)，若出现多个通道则按通道拆分。
     /// 没有任何音符的 track（纯 meta）会被忽略。
+    ///
+    /// 重构后：每个 <see cref="Note"/> 同时保留 <see cref="Note.StartTick"/> /
+    /// <see cref="Note.DurationTick"/> 与 <see cref="Note.Start"/> / <see cref="Note.Duration"/>(秒)。
+    /// 后者通过 <see cref="TempoManager"/> 折算得到，曲速被编辑后可被重算。
     /// </summary>
     public static ParseResult Parse(string path)
     {
@@ -53,41 +60,21 @@ public static class MidiParser
         int ppq = midiFile.DeltaTicksPerQuarterNote;
         if (ppq <= 0) ppq = 480;
 
-        // 1. 收集全局 tempo 变化点（跨全部 track）。
-        var tempos = new List<(long Tick, int Mpqn)>();
+        // 1. 收集全局 tempo 变化点 → 构造 TempoManager
+        var rawTempos = new List<(long Tick, int Mpqn)>();
         foreach (var track in midiFile.Events)
         {
             foreach (var e in track)
             {
                 if (e is TempoEvent te)
-                    tempos.Add((te.AbsoluteTime, te.MicrosecondsPerQuarterNote));
+                    rawTempos.Add((te.AbsoluteTime, te.MicrosecondsPerQuarterNote));
             }
         }
-        tempos.Sort((a, b) => a.Tick.CompareTo(b.Tick));
-        if (tempos.Count == 0 || tempos[0].Tick > 0)
-            tempos.Insert(0, (0, 500000)); // 默认 120 BPM
+        var tempoManager = new TempoManager(ppq, rawTempos);
 
-        double TickToSeconds(long tick)
-        {
-            if (tick <= 0) return 0;
-            double seconds = 0;
-            long prevTick = 0;
-            int mpqn = tempos[0].Mpqn;
-            for (int i = 0; i < tempos.Count; i++)
-            {
-                var (t, m) = tempos[i];
-                if (t >= tick) break;
-                seconds += (t - prevTick) * (mpqn / 1_000_000.0) / ppq;
-                prevTick = t;
-                mpqn = m;
-            }
-            seconds += (tick - prevTick) * (mpqn / 1_000_000.0) / ppq;
-            return seconds;
-        }
-
-        // 2. 每个 track 独立收集 Name + Notes。
+        // 2. 每个 track 独立收集 Name + Notes（先只填 tick 字段，秒时间稍后由 TempoManager 计算）
         var tracks = new List<MidiTrack>();
-        double total = 0;
+        long maxEndTick = 0;
 
         for (int t = 0; t < midiFile.Events.Tracks; t++)
         {
@@ -108,27 +95,23 @@ public static class MidiParser
                     long startTick = noteOn.AbsoluteTime;
                     long endTick = noteOn.OffEvent.AbsoluteTime;
                     if (endTick < startTick) endTick = startTick;
-
-                    double start = TickToSeconds(startTick);
-                    double end = TickToSeconds(endTick);
-                    double dur = end - start;
-                    if (dur < 0.02) dur = 0.02;
+                    long durTick = endTick - startTick;
 
                     notes.Add(new Note
                     {
                         OriginalPitch = noteOn.NoteNumber,
-                        Start = start,
-                        Duration = dur,
+                        StartTick = startTick,
+                        DurationTick = durTick,
                         Channel = noteOn.Channel,
                         Velocity = noteOn.Velocity,
                     });
 
-                    if (start + dur > total) total = start + dur;
+                    if (endTick > maxEndTick) maxEndTick = endTick;
                 }
             }
 
             if (notes.Count == 0) continue;
-            notes.Sort((a, b) => a.Start.CompareTo(b.Start));
+            notes.Sort((a, b) => a.StartTick.CompareTo(b.StartTick));
 
             int idx = tracks.Count;
             tracks.Add(new MidiTrack
@@ -163,30 +146,42 @@ public static class MidiParser
             }
         }
 
+        // 把 tick → 秒 折算写到每个 Note 上
+        RecomputeNoteTimes(tracks, tempoManager);
+
         // 应用默认映射（无移调）
         foreach (var tr in tracks)
             ApplyTranspose(tr.Notes, 0, Instruments.Default);
 
-        // 把曲速点折算成 (秒, BPM) 列表，去掉相邻重复的 BPM。
-        var tempoMarkers = new List<TempoMarker>();
-        double lastBpm = -1;
-        foreach (var (tick, mpqn) in tempos)
-        {
-            if (mpqn <= 0) continue;
-            double bpm = 60_000_000.0 / mpqn;
-            // 同一 BPM 连续出现时只保留首个，避免在速度轨上叠成糊
-            if (Math.Abs(bpm - lastBpm) < 0.001) continue;
-            tempoMarkers.Add(new TempoMarker { Time = TickToSeconds(tick), Bpm = bpm });
-            lastBpm = bpm;
-        }
+        double total = tempoManager.TickToSeconds(maxEndTick);
 
         return new ParseResult
         {
             Tracks = tracks,
-            Tempos = tempoMarkers,
+            TempoManager = tempoManager,
+            MaxEndTick = maxEndTick,
             TotalDuration = total,
             FileName = System.IO.Path.GetFileName(path),
         };
+    }
+
+    /// <summary>
+    /// 用给定的 <see cref="TempoManager"/> 把每个 <see cref="Note"/> 的 tick 字段折算到秒。
+    /// 当用户编辑了某个曲速 → 重算所有 Note 的 Start / Duration 时使用。
+    /// </summary>
+    public static void RecomputeNoteTimes(IEnumerable<MidiTrack> tracks, TempoManager mgr)
+    {
+        foreach (var tr in tracks)
+        {
+            foreach (var n in tr.Notes)
+            {
+                double start = mgr.TickToSeconds(n.StartTick);
+                double end = mgr.TickToSeconds(n.StartTick + n.DurationTick);
+                n.Start = start;
+                // 与原解析逻辑一致：极短音符给个 20ms 下限，避免按下/抬起时间几乎同时。
+                n.Duration = Math.Max(0.02, end - start);
+            }
+        }
     }
 
     /// <summary>对所有音符应用半音数移调 + 指定乐器组。</summary>
