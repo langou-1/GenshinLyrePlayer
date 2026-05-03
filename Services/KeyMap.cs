@@ -3,9 +3,9 @@ using System.Collections.Generic;
 namespace GenshinLyrePlayer.Services;
 
 /// <summary>
-/// 兼容层：保留老版 <c>KeyMap</c> 静态 API，内部委派到默认乐器
-/// (<see cref="Instruments.Default"/>)。新代码请直接使用 <see cref="Models.Instrument"/>
-/// 以支持多乐器切换。
+/// 兼容层：保留老版 <c>KeyMap</c> 静态 API，内部委派到默认乐器组
+/// (<see cref="Instruments.Default"/>)。新代码请直接使用 <see cref="Models.InstrumentGroup"/>
+/// 以支持多乐器组切换。
 /// </summary>
 public static class KeyMap
 {

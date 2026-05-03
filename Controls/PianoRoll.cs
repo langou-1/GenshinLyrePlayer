@@ -28,8 +28,8 @@ public sealed class PianoRoll : Control
     public static readonly StyledProperty<double> PixelsPerSecondProperty =
         AvaloniaProperty.Register<PianoRoll, double>(nameof(PixelsPerSecond), 120);
 
-    public static readonly StyledProperty<Instrument?> InstrumentProperty =
-        AvaloniaProperty.Register<PianoRoll, Instrument?>(nameof(Instrument));
+    public static readonly StyledProperty<InstrumentGroup?> InstrumentGroupProperty =
+        AvaloniaProperty.Register<PianoRoll, InstrumentGroup?>(nameof(InstrumentGroup));
 
     public IReadOnlyList<Note>? Notes
     {
@@ -55,11 +55,11 @@ public sealed class PianoRoll : Control
         set => SetValue(PixelsPerSecondProperty, value);
     }
 
-    /// <summary>当前乐器。用于确定“可演奏音域”高亮区域。为空时回退到 <see cref="Instruments.Default"/>。</summary>
-    public Instrument? Instrument
+    /// <summary>当前乐器组。用于确定“可演奏音域”高亮区域。为空时回退到 <see cref="Instruments.Default"/>。</summary>
+    public InstrumentGroup? InstrumentGroup
     {
-        get => GetValue(InstrumentProperty);
-        set => SetValue(InstrumentProperty, value);
+        get => GetValue(InstrumentGroupProperty);
+        set => SetValue(InstrumentGroupProperty, value);
     }
 
     /// <summary>用户点击/拖动导致的跳转请求。参数：秒。</summary>
@@ -89,7 +89,7 @@ public sealed class PianoRoll : Control
 
     static PianoRoll()
     {
-        AffectsRender<PianoRoll>(NotesProperty, DurationProperty, PlayheadProperty, PixelsPerSecondProperty, InstrumentProperty);
+        AffectsRender<PianoRoll>(NotesProperty, DurationProperty, PlayheadProperty, PixelsPerSecondProperty, InstrumentGroupProperty);
         AffectsMeasure<PianoRoll>(DurationProperty, PixelsPerSecondProperty);
     }
 
@@ -124,10 +124,10 @@ public sealed class PianoRoll : Control
             context.FillRectangle(brush, new Rect(0, i * RowHeight, width, RowHeight));
         }
 
-        // 可演奏音域高亮（依赖当前乐器）
-        var inst = Instrument ?? Instruments.Default;
-        double playableTopY = PitchToY(inst.MaxPitch);
-        double playableBotY = PitchToY(inst.MinPitch) + RowHeight;
+        // 可演奏音域高亮（依赖当前乐器组）
+        var group = InstrumentGroup ?? Instruments.Default;
+        double playableTopY = PitchToY(group.MaxPitch);
+        double playableBotY = PitchToY(group.MinPitch) + RowHeight;
         context.FillRectangle(PlayableBandBrush, new Rect(0, playableTopY, width, playableBotY - playableTopY));
 
         // 八度分隔线（每个 C 音）

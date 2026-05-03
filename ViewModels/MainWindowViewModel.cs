@@ -45,11 +45,11 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private string? _countdownText;
     [ObservableProperty] private string? _statusText = "就绪";
 
-    /// <summary>可选的乐器列表（下拉框数据源）。</summary>
-    public IReadOnlyList<Instrument> AvailableInstruments { get; } = Instruments.All;
+    /// <summary>可选的乐器组列表（下拉框数据源）。</summary>
+    public IReadOnlyList<InstrumentGroup> AvailableInstrumentGroups { get; } = Instruments.Groups;
 
-    /// <summary>当前选中的乐器。切换时会用新映射重新计算所有音符的可演奏状态。</summary>
-    [ObservableProperty] private Instrument _selectedInstrument = Instruments.Default;
+    /// <summary>当前选中的乐器组。切换时会用新映射重新计算所有音符的可演奏状态。</summary>
+    [ObservableProperty] private InstrumentGroup _selectedInstrumentGroup = Instruments.Default;
 
     /// <summary>播放按钮应显示的文字，随 IsPlaying 自动变化（绑定用）。</summary>
     public string PlayPauseButtonText => IsPlaying ? "⏸ 暂停 (F8)" : "▶ 播放 (F8)";
@@ -76,18 +76,18 @@ public partial class MainWindowViewModel : ObservableObject
         ReapplyMapping();
     }
 
-    partial void OnSelectedInstrumentChanged(Instrument value)
+    partial void OnSelectedInstrumentGroupChanged(InstrumentGroup value)
     {
         ReapplyMapping();
         if (value != null)
             StatusText = $"已切换到 {value.Name}（{value.Description}）";
     }
 
-    /// <summary>基于当前 Transpose + SelectedInstrument 重算 Key / Supported。</summary>
+    /// <summary>基于当前 Transpose + SelectedInstrumentGroup 重算 Key / Supported。</summary>
     private void ReapplyMapping()
     {
         if (Notes is null || Notes.Count == 0) return;
-        MidiParser.ApplyTranspose(Notes, Transpose, SelectedInstrument);
+        MidiParser.ApplyTranspose(Notes, Transpose, SelectedInstrumentGroup);
         // 重新赋一个新的 List 引用，触发 UI 重绘
         Notes = new List<Note>(Notes);
         RefreshStats();
@@ -148,42 +148,42 @@ public partial class MainWindowViewModel : ObservableObject
         var notesList = Notes.ToList();
         int total = notesList.Count;
 
-        // 先看当前乐器的最佳移调能达成多高的可演奏率；若仍有未覆盖的音，
-        // 则尝试所有乐器，挑覆盖最多者。
-        var inCurrent = MidiParser.FindBestTransposeWithScore(notesList, SelectedInstrument);
+        // 先看当前乐器组的最佳移调能达成多高的可演奏率；若仍有未覆盖的音，
+        // 则尝试所有乐器组，挑覆盖最多者。
+        var inCurrent = MidiParser.FindBestTransposeWithScore(notesList, SelectedInstrumentGroup);
 
         if (inCurrent.Score >= total)
         {
-            // 当前乐器即可完整演奏
+            // 当前乐器组即可完整演奏
             Transpose = inCurrent.Shift;
-            StatusText = $"已自动移调 {Format(inCurrent.Shift)} 半音（{SelectedInstrument.Name}，全部 {total} 音均可演奏）";
+            StatusText = $"已自动移调 {Format(inCurrent.Shift)} 半音（{SelectedInstrumentGroup.Name}，全部 {total} 音均可演奏）";
             return;
         }
 
-        var best = MidiParser.FindBestTransposeAcrossInstruments(notesList, AvailableInstruments, SelectedInstrument);
+        var best = MidiParser.FindBestTransposeAcrossGroups(notesList, AvailableInstrumentGroups, SelectedInstrumentGroup);
 
-        // 如果跨乐器的最佳得分不比当前乐器高，就沿用当前乐器的结果
+        // 如果跨乐器组的最佳得分不比当前组高，就沿用当前组的结果
         if (best.Score <= inCurrent.Score)
         {
             Transpose = inCurrent.Shift;
-            StatusText = $"已自动移调 {Format(inCurrent.Shift)} 半音（{SelectedInstrument.Name}，可演奏 {inCurrent.Score}/{total}）";
+            StatusText = $"已自动移调 {Format(inCurrent.Shift)} 半音（{SelectedInstrumentGroup.Name}，可演奏 {inCurrent.Score}/{total}）";
             return;
         }
 
-        // 切换到更合适的乐器
-        bool switched = best.Instrument != SelectedInstrument;
-        if (switched) SelectedInstrument = best.Instrument;
+        // 切换到更合适的乐器组
+        bool switched = best.Group != SelectedInstrumentGroup;
+        if (switched) SelectedInstrumentGroup = best.Group;
         Transpose = best.Shift;
 
         if (switched)
         {
             StatusText =
-                $"当前乐器({SelectedInstrument.Name})最佳仅可演奏 {inCurrent.Score}/{total}，" +
-                $"已自动切换到 {best.Instrument.Name}，移调 {Format(best.Shift)} 半音 → 可演奏 {best.Score}/{total}";
+                $"当前乐器组({SelectedInstrumentGroup.Name})最佳仅可演奏 {inCurrent.Score}/{total}，" +
+                $"已自动切换到 {best.Group.Name}，移调 {Format(best.Shift)} 半音 → 可演奏 {best.Score}/{total}";
         }
         else
         {
-            StatusText = $"已自动移调 {Format(best.Shift)} 半音（{best.Instrument.Name}，可演奏 {best.Score}/{total}）";
+            StatusText = $"已自动移调 {Format(best.Shift)} 半音（{best.Group.Name}，可演奏 {best.Score}/{total}）";
         }
 
         static string Format(int s) => (s >= 0 ? "+" : "") + s;

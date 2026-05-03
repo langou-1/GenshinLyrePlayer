@@ -4,25 +4,27 @@ using GenshinLyrePlayer.Models;
 namespace GenshinLyrePlayer.Services;
 
 /// <summary>
-/// 原神所有可用「诗琴」类乐器的注册表。
+/// 原神所有可用「诗琴」类乐器组的注册表。
 ///
 /// 键盘布局（所有琴都相同的物理布局）：
 ///   高音:  Q W E R T Y U
 ///   中音:  A S D F G H J
 ///   低音:  Z X C V B N M
 ///
-/// 但不同琴的每个按键所对应的 MIDI 音高并不一样：
+/// 但不同组每个按键所对应的 MIDI 音高并不一样：
 ///
 ///   ▸ 老旧的诗琴（图中所示）：
 ///       高音 (Q-U): C5  Db5  Eb5  F5  G5  Ab5  Bb5   （近似 C 弗里几亚调式）
 ///       中音 (A-J): C4  D4   Eb4  F4  G4  A4   Bb4   （近似 C 多里安 / Bb 大调）
 ///       低音 (Z-M): C3  D3   Eb3  F3  G3  A3   Bb3
 ///
-///   ▸ 风物之诗琴 / 镜花之琴（现代蒙德 / 稻妻琴）：
+///   ▸ 风物之诗琴 / 镜花之琴（蒙德 / 稻妻琴）：
 ///       三个八度都是标准 C 大调白键：C  D  E  F  G  A  B
 ///
-/// 因此不同乐器能直接演奏的 MIDI 音高不同，自动移调在当前乐器无法覆盖时，
-/// 切换到其它乐器可能得到更好的结果。
+/// 由于「风物之诗琴」与「镜花之琴」键位映射完全相同，它们归在同一个乐器组
+/// 中；「老旧的诗琴」由于调式不同单独为一组。
+/// 因此不同组能直接演奏的 MIDI 音高不同，自动移调在当前组无法覆盖时，
+/// 切换到其它组可能得到更好的结果。
 /// </summary>
 public static class Instruments
 {
@@ -48,43 +50,35 @@ public static class Instruments
         { 72, 'Q' }, { 74, 'W' }, { 76, 'E' }, { 77, 'R' }, { 79, 'T' }, { 81, 'Y' }, { 83, 'U' },
     };
 
-    /// <summary>老旧的诗琴（默认）：非 C 大调调式，高音区含 Db/Ab。</summary>
-    public static readonly Instrument OldLyre = new()
+    /// <summary>风物之诗琴 / 镜花之琴（默认）：标准 C 大调 21 键。</summary>
+    public static readonly InstrumentGroup CMajorLyres = new()
+    {
+        Id = "c-major-lyres",
+        Name = "风物之诗琴 / 镜花之琴",
+        Description = "C 大调 21 键（3 个八度）· 蒙德 & 稻妻",
+        MemberNames = new[] { "风物之诗琴", "镜花之琴" },
+        PitchToKey = CMajor21Keys,
+    };
+
+    /// <summary>老旧的诗琴：非 C 大调调式，高音区含 Db/Ab。</summary>
+    public static readonly InstrumentGroup OldLyre = new()
     {
         Id = "old-lyre",
         Name = "老旧的诗琴",
         Description = "蒙德 · 高音 C Phrygian / 中低音 C Dorian（Bb 大调）",
+        MemberNames = new[] { "老旧的诗琴" },
         PitchToKey = OldLyreKeys,
     };
 
-    /// <summary>风物之诗琴：标准 C 大调 21 键。</summary>
-    public static readonly Instrument FloralZither = new()
+    /// <summary>所有可选乐器组。列表顺序决定下拉框的排列与自动移调的扫描顺序（得分相同则偏向靠前者）。</summary>
+    public static readonly IReadOnlyList<InstrumentGroup> Groups = new[]
     {
-        Id = "floral-zither",
-        Name = "风物之诗琴",
-        Description = "蒙德 · C 大调 21 键（3 个八度）",
-        PitchToKey = CMajor21Keys,
-    };
-
-    /// <summary>镜花之琴：标准 C 大调 21 键。</summary>
-    public static readonly Instrument VintageLyre = new()
-    {
-        Id = "vintage-lyre",
-        Name = "镜花之琴",
-        Description = "稻妻 · C 大调 21 键（3 个八度）",
-        PitchToKey = CMajor21Keys,
-    };
-
-    /// <summary>所有可选乐器。列表顺序决定自动移调的扫描顺序（得分相同则偏向靠前者）。</summary>
-    public static readonly IReadOnlyList<Instrument> All = new[]
-    {
+        CMajorLyres,
         OldLyre,
-        FloralZither,
-        VintageLyre,
     };
 
-    /// <summary>默认乐器：老旧的诗琴。</summary>
-    public static Instrument Default => OldLyre;
+    /// <summary>默认乐器组：C 大调组（风物之诗琴 / 镜花之琴）。</summary>
+    public static InstrumentGroup Default => CMajorLyres;
 
     /// <summary>C 大调键位的通用唱名标签，仅用于调试/显示；老旧的诗琴会返回空串。</summary>
     public static string GetStandardLabel(int pitch)
