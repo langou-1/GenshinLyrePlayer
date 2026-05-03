@@ -7,8 +7,8 @@
         x:Name="RootWindow"
         x:DataType="vm:MainWindowViewModel"
         Title="原琴自动演奏"
-        Width="1260" Height="720"
-        MinWidth="1260" MinHeight="540"
+        Width="1380" Height="720"
+        MinWidth="1380" MinHeight="540"
         DragDrop.AllowDrop="True">
 
     <Window.Styles>
@@ -67,7 +67,24 @@
                     </ComboBox.ItemTemplate>
                 </ComboBox>
                 <Rectangle Width="1" Fill="#333" Margin="4,4"/>
-                <Button Classes="toolbar" MinWidth="110"
+
+                <TextBlock Text="模式:" VerticalAlignment="Center" Margin="4,0"/>
+                <ComboBox ItemsSource="{Binding AvailableModes}"
+                          SelectedItem="{Binding SelectedPlaybackMode}"
+                          MinWidth="200" VerticalAlignment="Center"
+                          ToolTip.Tip="演奏模式：『演奏到原神』把按键事件发到游戏；『试听·琴键映射』在本机播放与游戏一致的内容；『试听·完整原曲』在本机播放完整原 MIDI（不受琴键限制）。">
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel>
+                                <TextBlock Text="{Binding Name}" FontWeight="SemiBold"/>
+                                <TextBlock Text="{Binding Description}" FontSize="11" Foreground="#9aa"/>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                </ComboBox>
+                <Rectangle Width="1" Fill="#333" Margin="4,4"/>
+
+                <Button Classes="toolbar" MinWidth="120"
                         Content="{Binding PlayPauseButtonText}"
                         Command="{Binding TogglePlayPauseCommand}"
                         ToolTip.Tip="{Binding PlayPauseButtonTooltip}"/>

@@ -17,6 +17,12 @@ public partial class MainWindowViewModel : ObservableObject
 {
     private readonly Player _player = new();
 
+    // ===== 演奏输出（按 SelectedPlaybackMode 切换）=====
+    // - KeyboardOutput 给原神演奏用，无状态、随时可用、不需要 dispose；
+    // - MidiPreviewOutput 占用一个 MIDI 设备句柄，按需创建 / 释放。
+    private readonly INoteOutput _keyboardOutput = new KeyboardOutput();
+    private MidiPreviewOutput? _previewOutput;
+
     public MainWindowViewModel()
     {
         _player.PlayheadChanged += p => Dispatcher.UIThread.Post(() =>
@@ -35,7 +41,137 @@ public partial class MainWindowViewModel : ObservableObject
         });
 
         Tracks.CollectionChanged += OnTracksCollectionChanged;
+
+        // 默认选中第一项 = 演奏到原神
+        _selectedPlaybackMode = AvailableModes[0];
     }
+
+    // ===== 演奏模式 =====
+
+    /// <summary>所有可选演奏模式（供 ComboBox 绑定）。</summary>
+    public IReadOnlyList<PlaybackModeOption> AvailableModes { get; } = new[]
+    {
+        new PlaybackModeOption
+        {
+            Mode = PlaybackMode.Genshin,
+            Name = "🎮 演奏到原神",
+            Description = "按键事件发到当前焦点窗口（请切到游戏）",
+        },
+        new PlaybackModeOption
+        {
+            Mode = PlaybackMode.PreviewLyre,
+            Name = "🔊 试听·琴键映射",
+            Description = "本机播放，与游戏一致（跳过红色不支持音）",
+        },
+        new PlaybackModeOption
+        {
+            Mode = PlaybackMode.PreviewOriginal,
+            Name = "🎼 试听·完整原曲",
+            Description = "本机播放完整原 MIDI（不受琴键 / 移调限制）",
+        },
+    };
+
+    private PlaybackModeOption _selectedPlaybackMode = null!;
+
+    /// <summary>当前选中的演奏模式选项；构造函数末尾会被初始化为列表第一项。</summary>
+    public PlaybackModeOption SelectedPlaybackMode
+    {
+        get => _selectedPlaybackMode;
+        set
+        {
+            if (_selectedPlaybackMode == value) return;
+            var old = _selectedPlaybackMode;
+            SetProperty(ref _selectedPlaybackMode, value);
+            OnPlaybackModeChanged(old?.Mode ?? PlaybackMode.Genshin, value?.Mode ?? PlaybackMode.Genshin);
+        }
+    }
+
+    /// <summary>当前模式（投影自 SelectedPlaybackMode，便于其它逻辑判断）。</summary>
+    public PlaybackMode CurrentMode => _selectedPlaybackMode?.Mode ?? PlaybackMode.Genshin;
+
+    /// <summary>是否处于"本机试听"模式（任意一种试听）。</summary>
+    public bool IsPreviewMode =>
+        CurrentMode == PlaybackMode.PreviewLyre || CurrentMode == PlaybackMode.PreviewOriginal;
+
+    /// <summary>
+    /// 用户切换演奏模式后的处理：
+    /// <list type="bullet">
+    ///   <item>正在演奏中的话立即停下，避免上一种输出在新模式里继续发声 / 发按键；</item>
+    ///   <item>切回原神模式时释放 MIDI 设备句柄；切到任一试听模式时按需创建并配置音色；</item>
+    ///   <item>更新播放按钮文字 / 状态栏提示。</item>
+    /// </list>
+    /// </summary>
+    private void OnPlaybackModeChanged(PlaybackMode oldMode, PlaybackMode newMode)
+    {
+        if (IsPlaying)
+        {
+            _player.Stop();
+            IsPlaying = false;
+            CountdownText = string.Empty;
+        }
+
+        if (newMode == PlaybackMode.Genshin)
+        {
+            // 不需要 MIDI 设备了，及时释放
+            _previewOutput?.Dispose();
+            _previewOutput = null;
+            StatusText = "已切换到「演奏到原神」：按 F8 / 播放后请切到游戏窗口";
+        }
+        else
+        {
+            bool useOriginal = newMode == PlaybackMode.PreviewOriginal;
+            int program = useOriginal
+                ? 0   // 原曲试听：通用钢琴 (Acoustic Grand Piano)
+                : GetPreviewProgramForGroup(SelectedInstrumentGroup);
+
+            // 试听口味变了（琴键 ↔ 原曲），需要重建一个新的 MidiPreviewOutput；
+            // 同口味下只更新音色即可，省一次设备开闭。
+            if (_previewOutput == null || _previewOutput.UseOriginalPitch != useOriginal)
+            {
+                _previewOutput?.Dispose();
+                try
+                {
+                    _previewOutput = new MidiPreviewOutput(useOriginal, program);
+                }
+                catch (Exception ex)
+                {
+                    _previewOutput = null;
+                    StatusText = $"试听初始化失败: {ex.Message}";
+                    // 退回到原神模式，避免后续 StartPlayback 拿到 null
+                    _selectedPlaybackMode = AvailableModes[0];
+                    OnPropertyChanged(nameof(SelectedPlaybackMode));
+                    OnPropertyChanged(nameof(CurrentMode));
+                    OnPropertyChanged(nameof(IsPreviewMode));
+                    OnPropertyChanged(nameof(PlayPauseButtonText));
+                    OnPropertyChanged(nameof(PlayPauseButtonTooltip));
+                    return;
+                }
+            }
+            else
+            {
+                _previewOutput.SetProgram(program);
+            }
+
+            StatusText = useOriginal
+                ? "已切换到「试听·完整原曲」：声音从本机扬声器播放"
+                : "已切换到「试听·琴键映射」：声音从本机扬声器播放（与游戏一致）";
+        }
+
+        OnPropertyChanged(nameof(CurrentMode));
+        OnPropertyChanged(nameof(IsPreviewMode));
+        OnPropertyChanged(nameof(PlayPauseButtonText));
+        OnPropertyChanged(nameof(PlayPauseButtonTooltip));
+    }
+
+    /// <summary>
+    /// 不同琴类乐器组在"琴键试听"下用什么 GM 音色更接近原曲——竖琴对应风物之诗琴 / 老旧的诗琴
+    /// 这种弦乐器，圆号则用 GM French Horn。原曲试听不走这里。
+    /// </summary>
+    private static int GetPreviewProgramForGroup(InstrumentGroup g) => g.Id switch
+    {
+        "windsong-horn" => 60, // French Horn
+        _ => 46,               // Orchestral Harp
+    };
 
     // ===== 多轨 =====
 
@@ -72,7 +208,29 @@ public partial class MainWindowViewModel : ObservableObject
         {
             UpdateAudibleStates();
             RefreshStats();
+
+            // 试听模式期望"实时混音"：Mute/Solo 一变就用新的可发声集合从当前
+            // Playhead 重启 Player（Player 内部一开始就把 audible 轨道一次性快照
+            // 到自己的 upcoming 列表里，否则演奏中改 Mute/Solo 是看不到效果的）。
+            // 原神模式不自动重启，避免抖动时反复给游戏送扫描码。
+            if (IsPlaying && IsPreviewMode)
+            {
+                LiveRestartFromPlayhead();
+            }
         }
+    }
+
+    /// <summary>
+    /// 试听模式下因可发声集合 / 音符内容发生变化时，从当前 <see cref="Playhead"/>
+    /// 立即重启 Player；改完后没有任何可演奏轨道的话会停在当前位置，
+    /// <see cref="StartPlayback"/> 会写好状态栏提示。
+    /// </summary>
+    private void LiveRestartFromPlayhead()
+    {
+        _player.Stop();
+        IsPlaying = false;
+        CountdownText = string.Empty;
+        StartPlayback(0);
     }
 
     /// <summary>
@@ -147,10 +305,37 @@ public partial class MainWindowViewModel : ObservableObject
 
     [ObservableProperty] private InstrumentGroup _selectedInstrumentGroup = Instruments.Default;
 
-    public string PlayPauseButtonText => IsPlaying ? "⏸ 暂停 (F8)" : "▶ 播放 (F8)";
-    public string PlayPauseButtonTooltip => IsPlaying
-        ? "暂停演奏，保留当前播放位置，再次按可继续(全局热键 F8)"
-        : "开始 / 继续演奏。也可使用全局热键 F8（焦点在原神里也生效）";
+    public string PlayPauseButtonText
+    {
+        get
+        {
+            if (IsPlaying) return "⏸ 暂停 (F8)";
+            return CurrentMode switch
+            {
+                PlaybackMode.PreviewLyre => "▶ 试听 (F8)",
+                PlaybackMode.PreviewOriginal => "▶ 试听原曲 (F8)",
+                _ => "▶ 播放 (F8)",
+            };
+        }
+    }
+
+    public string PlayPauseButtonTooltip
+    {
+        get
+        {
+            if (IsPlaying)
+                return "暂停演奏，保留当前播放位置，再次按可继续(全局热键 F8)";
+            return CurrentMode switch
+            {
+                PlaybackMode.PreviewLyre =>
+                    "在本程序内试听（按琴键映射）：声音从扬声器播放，不会向游戏发送按键。也可使用全局热键 F8。",
+                PlaybackMode.PreviewOriginal =>
+                    "在本程序内试听（完整原曲）：按 MIDI 原音高完整播放，不受琴键限制 / 移调。也可使用全局热键 F8。",
+                _ =>
+                    "开始 / 继续演奏。也可使用全局热键 F8（焦点在原神里也生效）",
+            };
+        }
+    }
 
     partial void OnIsPlayingChanged(bool value)
     {
@@ -172,6 +357,12 @@ public partial class MainWindowViewModel : ObservableObject
     partial void OnSelectedInstrumentGroupChanged(InstrumentGroup value)
     {
         ReapplyMapping();
+        // 琴键试听模式下，切换乐器组也要把试听音色跟着切（竖琴 / 圆号 …）；
+        // 原曲试听用固定钢琴音色，跟乐器组无关。
+        if (_previewOutput != null && !_previewOutput.UseOriginalPitch && value != null)
+        {
+            _previewOutput.SetProgram(GetPreviewProgramForGroup(value));
+        }
         if (value != null)
             StatusText = $"已切换到 {value.Name}（{value.Description}）";
     }
@@ -321,6 +512,7 @@ public partial class MainWindowViewModel : ObservableObject
     /// <summary>
     /// 从当前 <see cref="Playhead"/> 启动 Player。<paramref name="countdownSeconds"/>
     /// 为 0 时跳过准备倒计时（用于 Seek 等"已经在播放中"的场景）。
+    /// 试听模式下也会跳过倒计时——本机试听不需要切到游戏。
     /// </summary>
     private void StartPlayback(int countdownSeconds)
     {
@@ -335,12 +527,50 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
+        // 选具体输出：原神模式 → 键盘注入；任一试听模式 → 本机 MIDI 合成器
+        INoteOutput output;
+        if (CurrentMode == PlaybackMode.Genshin)
+        {
+            output = _keyboardOutput;
+        }
+        else
+        {
+            // OnPlaybackModeChanged 里应该已经创建好 _previewOutput；理论上不会为 null，
+            // 兜底再创建一次（例如设备初始化失败后用户改了乐器又切回来的边角情况）。
+            if (_previewOutput == null)
+            {
+                bool useOriginal = CurrentMode == PlaybackMode.PreviewOriginal;
+                int program = useOriginal ? 0 : GetPreviewProgramForGroup(SelectedInstrumentGroup);
+                try
+                {
+                    _previewOutput = new MidiPreviewOutput(useOriginal, program);
+                }
+                catch (Exception ex)
+                {
+                    StatusText = $"试听初始化失败: {ex.Message}";
+                    return;
+                }
+            }
+            output = _previewOutput;
+            // 试听不需要倒计时，0 = 立即开始
+            countdownSeconds = 0;
+        }
+
         IsPlaying = true;
-        StatusText = countdownSeconds > 0
-            ? $"从 {FormatTime(Playhead)} 开始演奏（请切换到原神窗口）"
-            : $"从 {FormatTime(Playhead)} 继续演奏";
+        StatusText = CurrentMode switch
+        {
+            PlaybackMode.Genshin =>
+                countdownSeconds > 0
+                    ? $"从 {FormatTime(Playhead)} 开始演奏（请切换到原神窗口）"
+                    : $"从 {FormatTime(Playhead)} 继续演奏",
+            PlaybackMode.PreviewLyre =>
+                $"试听·琴键映射 · 从 {FormatTime(Playhead)} 开始（声音在本机播放）",
+            PlaybackMode.PreviewOriginal =>
+                $"试听·完整原曲 · 从 {FormatTime(Playhead)} 开始（声音在本机播放）",
+            _ => $"从 {FormatTime(Playhead)} 开始",
+        };
         _player.Speed = Speed;
-        _player.Play(combined, Playhead, countdownSeconds);
+        _player.Play(combined, Playhead, countdownSeconds, output);
     }
 
     [RelayCommand]
@@ -483,5 +713,7 @@ public partial class MainWindowViewModel : ObservableObject
             _tempoManager = null;
         }
         _player.Dispose();
+        _previewOutput?.Dispose();
+        _previewOutput = null;
     }
 }
