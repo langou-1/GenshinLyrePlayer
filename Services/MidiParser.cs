@@ -17,6 +17,9 @@ public static class MidiParser
         /// <summary>整首曲子的曲速管理器。在用户编辑 BPM 后，所有 Note 的秒时间会基于它重算。</summary>
         public TempoManager TempoManager { get; init; } = new(480);
 
+        /// <summary>整首曲子的拍号管理器。提供 PianoRoll 绘制 bar/beat 格线所需的 tick 边界。</summary>
+        public TimeSignatureManager TimeSignatureManager { get; init; } = new(480);
+
         /// <summary>所有轨道里最大的 (StartTick + DurationTick)，用于在 BPM 变更后重算 <see cref="TotalDuration"/>。</summary>
         public long MaxEndTick { get; init; }
 
@@ -71,6 +74,23 @@ public static class MidiParser
             }
         }
         var tempoManager = new TempoManager(ppq, rawTempos);
+
+        // 1.b 收集全局拍号变化点 → 构造 TimeSignatureManager
+        // NAudio 的 TimeSignatureEvent.Denominator 存的是 MIDI 原始字节（即 2 的幂），
+        // 这里展开为实际分母（2 → 4，3 → 8 …）。
+        var rawTimeSigs = new List<(long Tick, int Numerator, int Denominator)>();
+        foreach (var track in midiFile.Events)
+        {
+            foreach (var e in track)
+            {
+                if (e is TimeSignatureEvent tse)
+                {
+                    int denom = 1 << Math.Clamp((int)tse.Denominator, 0, 7); // 0..7 → 1..128
+                    rawTimeSigs.Add((tse.AbsoluteTime, tse.Numerator, denom));
+                }
+            }
+        }
+        var timeSignatureManager = new TimeSignatureManager(ppq, rawTimeSigs);
 
         // 2. 每个 track 独立收集 Name + Notes（先只填 tick 字段，秒时间稍后由 TempoManager 计算）
         var tracks = new List<MidiTrack>();
@@ -159,6 +179,7 @@ public static class MidiParser
         {
             Tracks = tracks,
             TempoManager = tempoManager,
+            TimeSignatureManager = timeSignatureManager,
             MaxEndTick = maxEndTick,
             TotalDuration = total,
             FileName = System.IO.Path.GetFileName(path),

@@ -212,14 +212,19 @@
         <Grid>
             <ScrollViewer HorizontalScrollBarVisibility="Auto"
                           VerticalScrollBarVisibility="Auto"
-                          Name="RollScroll"
-                          PointerWheelChanged="OnRollWheel">
+                          Name="RollScroll">
+                <!-- 注意：PointerWheelChanged 必须挂在内部的 PianoRoll 上，
+                     这样在事件冒泡到 ScrollViewer 内部的 ScrollContentPresenter
+                     之前我们就能拦截并处理掉，按住 Ctrl 时不会再触发垂直滚动。 -->
                 <ctl:PianoRoll Name="Roll"
                                Notes="{Binding Notes}"
                                Duration="{Binding Duration}"
                                Playhead="{Binding Playhead}"
                                PixelsPerSecond="{Binding PixelsPerSecond}"
-                               InstrumentGroup="{Binding SelectedInstrumentGroup}"/>
+                               InstrumentGroup="{Binding SelectedInstrumentGroup}"
+                               TempoManager="{Binding TempoManagerForView}"
+                               TimeSignatureManager="{Binding TimeSignatureManagerForView}"
+                               PointerWheelChanged="OnRollWheel"/>
             </ScrollViewer>
 
             <!-- 倒计时大字覆盖层，提醒用户切换到原神 -->

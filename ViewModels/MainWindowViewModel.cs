@@ -109,6 +109,25 @@ public partial class MainWindowViewModel : ObservableObject
     /// <summary>当前曲子的曲速管理器；切换 MIDI 时整体替换。</summary>
     private TempoManager? _tempoManager;
 
+    /// <summary>
+    /// 当前曲子的曲速管理器，对外暴露给 PianoRoll —— 钢琴卷帘按 tick 绘格线时
+    /// 用它把 bar/beat 的 tick 边界折算成秒。BPM 编辑后实例不变，但内部
+    /// markers 的 Time 会被原地改写；为了让 PianoRoll 重绘，我们在
+    /// <see cref="OnTempoManagerChanged"/> 里把 Notes 引用换新触发重绘。
+    /// </summary>
+    public TempoManager? TempoManagerForView => _tempoManager;
+
+    /// <summary>
+    /// 当前曲子的拍号管理器，对外暴露给 PianoRoll；切换 MIDI 时整体替换，运行期不变。
+    /// 名字加 "ForView" 后缀，避免与类型 <see cref="TimeSignatureManager"/> 同名导致的编译歧义。
+    /// </summary>
+    private TimeSignatureManager? _timeSignatureManager;
+    public TimeSignatureManager? TimeSignatureManagerForView
+    {
+        get => _timeSignatureManager;
+        private set => SetProperty(ref _timeSignatureManager, value);
+    }
+
     /// <summary>所有轨道里最大的 NoteEnd 的 tick 位置，用于在 BPM 变化后重算总时长。</summary>
     private long _maxEndTick;
 
@@ -188,7 +207,9 @@ public partial class MainWindowViewModel : ObservableObject
             {
                 _tempoManager.Changed -= OnTempoManagerChanged;
                 _tempoManager = null;
+                OnPropertyChanged(nameof(TempoManagerForView));
             }
+            TimeSignatureManagerForView = null;
             _maxEndTick = 0;
             Tracks.Clear();
             TotalNotes = 0;
@@ -206,6 +227,8 @@ public partial class MainWindowViewModel : ObservableObject
             FileName = result.FileName;
             _tempoManager = result.TempoManager;
             _tempoManager.Changed += OnTempoManagerChanged;
+            OnPropertyChanged(nameof(TempoManagerForView));
+            TimeSignatureManagerForView = result.TimeSignatureManager;
             _maxEndTick = result.MaxEndTick;
             Duration = result.TotalDuration;
             Playhead = 0;

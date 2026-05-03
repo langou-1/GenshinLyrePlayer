@@ -136,12 +136,16 @@ public partial class MainWindow : Window
         double oldOffsetX = RollScroll.Offset.X;
         double newOffsetX = Math.Max(0, (oldOffsetX + mouseX) * ratio - mouseX);
 
+        // 关键：先改 pps，再立即强制布局，让 ScrollViewer 的 Extent 反映新宽度，
+        // 然后在同一帧内把 Offset 设置好，这样不会先渲染一个错误位置的帧再回弹。
         Vm.PixelsPerSecond = newPps;
+        Roll.InvalidateMeasure();
+        Roll.UpdateLayout();
+        RollScroll.UpdateLayout();
 
-        Dispatcher.UIThread.Post(() =>
-        {
-            RollScroll.Offset = new Vector(newOffsetX, RollScroll.Offset.Y);
-        }, DispatcherPriority.Background);
+        double maxOff = Math.Max(0, RollScroll.Extent.Width - RollScroll.Viewport.Width);
+        newOffsetX = Math.Clamp(newOffsetX, 0, maxOff);
+        RollScroll.Offset = new Vector(newOffsetX, RollScroll.Offset.Y);
 
         e.Handled = true;
     }
