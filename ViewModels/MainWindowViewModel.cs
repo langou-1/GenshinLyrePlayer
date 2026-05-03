@@ -64,7 +64,12 @@ public partial class MainWindowViewModel : ObservableObject
 
     private void OnTrackItemChanged(object? sender, PropertyChangedEventArgs e)
     {
-        // Mute 变化不影响展示，只在下次 Play 时生效。这里无需额外处理。
+        // Mute 变化不影响展示，但会影响"自动移调"评估范围与底部统计数字
+        // （总音符数 / 可演奏音符数都只统计未静音轨道），所以需要在此刷新统计。
+        if (e.PropertyName == nameof(MidiTrack.Muted))
+        {
+            RefreshStats();
+        }
     }
 
     // ===== 基本状态 =====
@@ -180,11 +185,14 @@ public partial class MainWindowViewModel : ObservableObject
     private void AutoTranspose()
     {
         if (Tracks.Count == 0) return;
-        // 仅对当前未静音的轨道做评估（静音轨不会演奏，不需要考虑）。
+        // 仅对当前未静音的轨道做评估（静音轨不会演奏，所以也不应参与移调判断）。
         var activeNotes = Tracks.Where(t => !t.Muted).SelectMany(t => t.Notes).ToList();
-        if (activeNotes.Count == 0) activeNotes = Tracks.SelectMany(t => t.Notes).ToList();
         int total = activeNotes.Count;
-        if (total == 0) return;
+        if (total == 0)
+        {
+            StatusText = "所有轨道都已静音，无可评估内容";
+            return;
+        }
 
         var inCurrent = MidiParser.FindBestTransposeWithScore(activeNotes, SelectedInstrumentGroup);
 
@@ -298,9 +306,11 @@ public partial class MainWindowViewModel : ObservableObject
 
     private void RefreshStats()
     {
+        // 静音轨道不会被演奏，所以底部"总音符数 / 可演奏音符数"也仅统计未静音的轨道。
         int total = 0, supp = 0;
         foreach (var tr in Tracks)
         {
+            if (tr.Muted) continue;
             foreach (var n in tr.Notes)
             {
                 total++;
