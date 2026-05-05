@@ -42,6 +42,15 @@ public partial class MidiTrack : ObservableObject
     /// </summary>
     [ObservableProperty] private IReadOnlyList<Note> _notes = Array.Empty<Note>();
 
+    /// <summary>
+    /// 此轨道在全局移调（<c>Transpose</c>）之外，单独再叠加的八度偏移量（一个单位 = 12 半音）。
+    /// 例如：全局 Transpose=0、本轨 OctaveOffset=+1，则本轨所有音符比原始 MIDI 高一个八度演奏。
+    /// 实际应用方式：在 <c>MainWindowViewModel.ReapplyMapping</c> 里将
+    /// <c>Transpose + OctaveOffset * 12</c> 作为本轨的最终半音位移传给
+    /// <c>MidiParser.ApplyTranspose</c>，仅影响此轨道。
+    /// </summary>
+    [ObservableProperty] private int _octaveOffset;
+
     /// <summary>用于缩略图着色的轨道颜色（ARGB 32 位整数）。</summary>
     public uint ColorArgb { get; init; }
 

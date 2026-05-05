@@ -81,12 +81,14 @@ public partial class MainWindow : Window
         if (Vm is null) return;
         Vm.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName == nameof(MainWindowViewModel.Playhead))
-                Dispatcher.UIThread.Post(AutoScrollToPlayhead);
-            else if (e.PropertyName == nameof(MainWindowViewModel.Duration)
-                  || e.PropertyName == nameof(MainWindowViewModel.PixelsPerSecond))
+            if (e.PropertyName == nameof(MainWindowViewModel.Duration)
+             || e.PropertyName == nameof(MainWindowViewModel.PixelsPerSecond))
                 Dispatcher.UIThread.Post(UpdateViewport);
         };
+        // 仅在 Player 自然推进时尝试自动翻页——这样用户 Seek（钢琴卷帘点击 / 时间轴滑块
+        // 拖放 / Home 键）和 Slider 双向绑定的中间值都不会再触发视野位移。这些入口在调用
+        // Vm.Seek 之后会显式调用 EnsurePlayheadVisible 自己决定是否要把 Playhead 拉回视野。
+        Vm.PlayerAdvanced += () => Dispatcher.UIThread.Post(AutoPageWhilePlaying);
         UpdateViewport();
     }
 
@@ -106,45 +108,95 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 跟随 Playhead 自动滚动视野。参考 TuneLab 的策略：
-    /// <list type="bullet">
-    /// <item>播放中：Playhead 靠近视野右侧（>75%）时翻一页，让接下来要演奏的内容露出来。</item>
-    /// <item>未播放：仅在 Playhead 跑到可视范围之外时，把视野挪到刚好能看见 Playhead 的位置；
-    ///       用户 Seek 到当前视野内的位置时视野完全不动。</item>
-    /// </list>
+    /// 播放过程中由 Player 自然推进 Playhead 触发的"自动翻页"：
+    /// 当 Playhead 进入视野右侧 25% 区域时把视野往前翻一页，让接下来要演奏的内容露出来。
+    /// 仅在 <see cref="MainWindowViewModel.IsPlaying"/> 为真时生效——这样所有由用户
+    /// Seek（点击钢琴卷帘 / 拖动时间轴 / Home 键 / Slider 双向绑定）引起的 Playhead 变化
+    /// 都不会让视野自动移动；用户 Seek 时是否需要把视野挪到能看见 Playhead 的位置，
+    /// 由各 Seek 入口在调用 <see cref="MainWindowViewModel.Seek"/> 之后显式调用
+    /// <see cref="EnsurePlayheadVisible"/> 来决定。
+    /// 这样分离的好处是：当用户暂停下 Seek 到视野内的位置时，本方法不会启动；
+    /// 各种迟到的 Playhead 通知（旧 Player 线程的最后一次 emit、Slider 双向绑定中间值等）
+    /// 都因为 IsPlaying 检查或者根本没走这条路而被天然过滤掉。
     /// </summary>
-    private void AutoScrollToPlayhead()
+    private void AutoPageWhilePlaying()
     {
-        if (Vm is null) return;
+        if (Vm is null || !Vm.IsPlaying) return;
         double x = Vm.Playhead * Roll.PixelsPerSecond;
         double viewW = RollScroll.Viewport.Width;
         double offX = RollScroll.Offset.X;
-
-        if (Vm.IsPlaying)
-        {
-            // 播放：靠近右侧 25% 范围内就翻一页；不再处理"playhead 跳到左边"的情况，
-            // 因为播放过程中 Playhead 只会向前推进，向后跳一定来自用户 Seek，
-            // 那种情况由下面"未播放"分支或者播放中 Seek 的语义共同决定——
-            // 用户在播放中 Seek 后 Player 会重新启动并继续向前推进，这里依然按右侧阈值翻页即可。
-            if (x > offX + viewW * 0.75)
-                RollScroll.Offset = new Vector(Math.Max(0, x - viewW * 0.25), RollScroll.Offset.Y);
-        }
-        else
-        {
-            // 未播放：用户 Seek 到视野内则保持不动；只有跑出视野才把视野挪到能看见 Playhead 的位置。
-            if (x < offX)
-                RollScroll.Offset = new Vector(Math.Max(0, x), RollScroll.Offset.Y);
-            else if (x > offX + viewW)
-                RollScroll.Offset = new Vector(Math.Max(0, x - viewW), RollScroll.Offset.Y);
-        }
+        if (x > offX + viewW * 0.75)
+            RollScroll.Offset = new Vector(Math.Max(0, x - viewW * 0.25), RollScroll.Offset.Y);
     }
 
-    private void OnRollSeek(double seconds) => Vm?.Seek(seconds);
+    /// <summary>
+    /// 用户主动 Seek 后调用：仅在 Playhead 跑到当前视野之外时，把视野挪到刚好能看见 Playhead
+    /// 的最近一侧；如果 Seek 目标已经在视野内则视野完全不动。这是参考 TuneLab 的"非播放
+    /// 状态下只有 Seek 出框才移动视野"的语义实现。
+    /// </summary>
+    /// <remarks>
+    /// 重要：参数 <paramref name="offX"/> / <paramref name="viewW"/> 必须由调用方在
+    /// "改动 Playhead 之前"从 <see cref="RollScroll"/> 抓拍后传入，不能在本方法里临时
+    /// 读取 <c>RollScroll.Offset.X</c>。原因：在 PianoRoll 的 PointerPressed 处理路径中
+    /// 先发出 SeekRequested，进入本类后会同步给 <see cref="MainWindowViewModel.Seek"/> 写一次
+    /// <c>Playhead</c>（带动 Slider 双向绑定 / TextBlock 等控件刷新一遍），随后 Avalonia
+    /// 走它的 BringDescendantIntoView 流水线，会让 <c>RollScroll.Offset.X</c> 在我们这次
+    /// 重新读取时短暂返回 0（实际真实偏移没有改变，<c>ScrollChanged</c> 也并未触发，是个
+    /// 读取不一致问题），如果用这个 0 去判分支，就会误以为播放头在视野右侧好几屏外，
+    /// 把视野挪去把播放头钉在最右边——也就是用户报告的 bug。所以把"点击发生时的真实视野
+    /// 边界"在最早的入口先记下来，下面的判定才稳。
+    /// </remarks>
+    private void EnsurePlayheadVisible(double playheadSeconds, double offX, double viewW)
+    {
+        if (Vm is null) return;
+        double pps = Math.Max(0.001, Roll.PixelsPerSecond);
+        double x = playheadSeconds * pps;
+        double newOffX = offX;
+        if (x < offX)
+            newOffX = Math.Max(0, x);
+        else if (x > offX + viewW)
+            newOffX = Math.Max(0, x - viewW);
+
+        // 在 PianoRoll 的 PointerPressed 处理路径里，Avalonia 还会顺手把宿主 ScrollViewer
+        // 的 Offset.X 重置（看起来是 BringDescendantIntoView 之类的连带效果），并且不会
+        // 触发 ScrollChanged。这意味着即使我们计算出"无需滚动"，Offset.X 也已经被改到 0
+        // 之类的值——视野直接被拽回曲谱开头。所以这里跟"当前真实 Offset"对比，差得多
+        // 就显式写回 newOffX，把 Avalonia 的副作用反悔掉。
+        double curOffX = RollScroll.Offset.X;
+        if (Math.Abs(newOffX - curOffX) > 0.5)
+            RollScroll.Offset = new Vector(newOffX, RollScroll.Offset.Y);
+    }
+
+    private void OnRollSeek(double seconds)
+    {
+        // 抓拍点击发生时的"真实视野起点 / 视野宽度"。
+        // - viewW 直接读 RollScroll.Viewport.Width，目前观察是稳的；
+        // - offX 不能直接读 RollScroll.Offset.X：在 PianoRoll PointerPressed → Vm.Seek 这条
+        //   路径里，Avalonia 内部会顺手把 ScrollViewer 的 Offset.X 重置（看起来是
+        //   BringDescendantIntoView 的连带效果），而且不会触发 ScrollChanged。直接读会拿到
+        //   一个错乱的瞬态值（往往是 0），导致 EnsurePlayheadVisible 误以为播放头跑到右侧
+        //   几屏外、把视野硬挪去对齐——也就是用户报告的 bug。
+        //   这里改读 Vm.ViewportStart——它是 ScrollChanged → UpdateViewport 同步写进 VM 的
+        //   "真实视野起点（秒）"，跟点击时刻 Avalonia 的瞬态状态无关；只有当它跟当前物理
+        //   Offset 一致时才用 raw 值。
+        double pps = Math.Max(0.001, Roll.PixelsPerSecond);
+        double rawOffX = RollScroll.Offset.X;
+        double vmOffX = Vm is null ? rawOffX : Vm.ViewportStart * pps;
+        double offX = (Vm is null) ? rawOffX
+                                   : (Math.Abs(rawOffX - vmOffX) > 1.0 ? vmOffX : rawOffX);
+        double viewW = RollScroll.Viewport.Width;
+        Vm?.Seek(seconds);
+        EnsurePlayheadVisible(seconds, offX, viewW);
+    }
 
     private void OnTimelineReleased(object? sender, PointerReleasedEventArgs e)
     {
         if (Vm is null) return;
-        Vm.Seek(TimelineSlider.Value);
+        double target = TimelineSlider.Value;
+        double offX = RollScroll.Offset.X;
+        double viewW = RollScroll.Viewport.Width;
+        Vm.Seek(target);
+        EnsurePlayheadVisible(target, offX, viewW);
     }
 
     // Ctrl + 滚轮：以鼠标位置为中心缩放钢琴卷帘
@@ -308,9 +360,14 @@ public partial class MainWindow : Window
                 e.Handled = true;
                 break;
             case Key.Home:
+            {
+                double offX = RollScroll.Offset.X;
+                double viewW = RollScroll.Viewport.Width;
                 Vm.Seek(0);
+                EnsurePlayheadVisible(0, offX, viewW);
                 e.Handled = true;
                 break;
+            }
         }
     }
 

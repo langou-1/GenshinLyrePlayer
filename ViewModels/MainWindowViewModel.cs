@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -17,6 +18,24 @@ public partial class MainWindowViewModel : ObservableObject
 {
     private readonly Player _player = new();
 
+    /// <summary>
+    /// 播放会话计数器：每次主动 <see cref="StopPlayer"/>（Pause / Stop / Seek / 切谱 等）
+    /// 都会自增。<see cref="Player.PlayheadChanged"/> 在 Player 线程同步触发时会捕获
+    /// 当时的会话号，UI 线程派发 lambda 在跑之前对照当前会话号——不一致即丢弃。
+    /// 这样就能避免"上一次播放线程在被取消之前已经 Post 到 UI 队列、但还没轮到执行的
+    /// 那批 Playhead 更新"在 Seek 完成后回写陈旧的 Playhead 值，进而触发 View 层
+    /// 误以为播放头还在视野外，错误地把视野挪走的问题。
+    /// </summary>
+    private int _playSession;
+
+    /// <summary>
+    /// Player 线程的"自然向前推进"通知，仅在 PlayheadChanged 通过会话校验后触发。
+    /// View 层用它来驱动播放过程中的视野自动翻页——不绑到 <see cref="Playhead"/>
+    /// 的 PropertyChanged 上是为了把"用户 Seek / Slider 拖动 / 陈旧异步通知"导致的
+    /// Playhead 写入跟"播放线自然推进"区分开，前者绝不应该让视野动。
+    /// </summary>
+    public event Action? PlayerAdvanced;
+
     // ===== 演奏输出（按 SelectedPlaybackMode 切换）=====
     // - KeyboardOutput 给原神演奏用，无状态、随时可用、不需要 dispose；
     // - MidiPreviewOutput 占用一个 MIDI 设备句柄，按需创建 / 释放。
@@ -25,11 +44,20 @@ public partial class MainWindowViewModel : ObservableObject
 
     public MainWindowViewModel()
     {
-        _player.PlayheadChanged += p => Dispatcher.UIThread.Post(() =>
+        _player.PlayheadChanged += p =>
         {
-            Playhead = p;
-            if (Duration > 0 && Playhead >= Duration) { /* will finish */ }
-        });
+            // 在 Player 线程同步捕获当前会话号；旧会话被 StopPlayer 自增过，
+            // UI 派发 lambda 跑起来时一比对就能识别出"取消前 Post 了、取消后才轮到执行"
+            // 的陈旧通知并直接丢弃。
+            int session = Volatile.Read(ref _playSession);
+            Dispatcher.UIThread.Post(() =>
+            {
+                if (session != Volatile.Read(ref _playSession)) return;
+                Playhead = p;
+                if (Duration > 0 && Playhead >= Duration) { /* will finish */ }
+                PlayerAdvanced?.Invoke();
+            });
+        };
         _player.Finished += () => Dispatcher.UIThread.Post(() =>
         {
             IsPlaying = false;
@@ -44,6 +72,19 @@ public partial class MainWindowViewModel : ObservableObject
 
         // 默认选中第一项 = 演奏到原神
         _selectedPlaybackMode = AvailableModes[0];
+    }
+
+    /// <summary>
+    /// 停止 Player 并自增播放会话号——所有"主动取消上一次演奏"的入口都应该走这里，
+    /// 这样旧 Player 线程在被取消之前 <c>Dispatcher.UIThread.Post</c> 出去、还没轮到执行
+    /// 的那些 PlayheadChanged 通知会因为会话号不匹配而被忽略，避免它们在 Seek/Stop/Pause
+    /// 完成之后把 <see cref="Playhead"/> 重写回旧值（曾经导致 Seek 到视野内时视野被
+    /// AutoPage 错误移开）。
+    /// </summary>
+    private void StopPlayer()
+    {
+        _player.Stop();
+        Interlocked.Increment(ref _playSession);
     }
 
     // ===== 演奏模式 =====
@@ -105,7 +146,7 @@ public partial class MainWindowViewModel : ObservableObject
     {
         if (IsPlaying)
         {
-            _player.Stop();
+            StopPlayer();
             IsPlaying = false;
             CountdownText = string.Empty;
         }
@@ -218,6 +259,17 @@ public partial class MainWindowViewModel : ObservableObject
                 LiveRestartFromPlayhead();
             }
         }
+        else if (e.PropertyName == nameof(MidiTrack.OctaveOffset) && sender is MidiTrack tr)
+        {
+            // 单轨八度偏移变化：只重新计算这一条轨道的 EffectivePitch / Key / Supported，
+            // 然后刷新统计 + 试听重启（与全局 Transpose 变化的处理保持一致，但不波及其它轨道）。
+            ReapplyMappingForTrack(tr);
+            RefreshStats();
+            if (IsPlaying && IsPreviewMode)
+            {
+                LiveRestartFromPlayhead();
+            }
+        }
     }
 
     /// <summary>
@@ -227,7 +279,7 @@ public partial class MainWindowViewModel : ObservableObject
     /// </summary>
     private void LiveRestartFromPlayhead()
     {
-        _player.Stop();
+        StopPlayer();
         IsPlaying = false;
         CountdownText = string.Empty;
         StartPlayback(0);
@@ -367,18 +419,29 @@ public partial class MainWindowViewModel : ObservableObject
             StatusText = $"已切换到 {value.Name}（{value.Description}）";
     }
 
-    /// <summary>基于当前 Transpose + SelectedInstrumentGroup 重算所有轨道的 Key / Supported。</summary>
+    /// <summary>
+    /// 基于当前 Transpose + SelectedInstrumentGroup 重算所有轨道的 Key / Supported。
+    /// 每条轨道在全局 Transpose 之外还会叠加自己的 <see cref="MidiTrack.OctaveOffset"/>（×12 半音）。
+    /// </summary>
     private void ReapplyMapping()
     {
         if (Tracks.Count == 0) return;
         foreach (var tr in Tracks)
         {
-            MidiParser.ApplyTranspose(tr.Notes, Transpose, SelectedInstrumentGroup);
+            MidiParser.ApplyTranspose(tr.Notes, Transpose + tr.OctaveOffset * 12, SelectedInstrumentGroup);
             // 重新赋值触发 Notes 变更事件，让绑定的控件（缩略图/钢琴卷帘）重绘。
             tr.Notes = new List<Note>(tr.Notes);
         }
         if (SelectedTrack != null) Notes = SelectedTrack.Notes;
         RefreshStats();
+    }
+
+    /// <summary>仅对单条轨道重算映射，用于 OctaveOffset 变化等单轨事件。</summary>
+    private void ReapplyMappingForTrack(MidiTrack tr)
+    {
+        MidiParser.ApplyTranspose(tr.Notes, Transpose + tr.OctaveOffset * 12, SelectedInstrumentGroup);
+        tr.Notes = new List<Note>(tr.Notes);
+        if (SelectedTrack == tr) Notes = tr.Notes;
     }
 
     partial void OnSpeedChanged(double value) => _player.Speed = value;
@@ -388,7 +451,7 @@ public partial class MainWindowViewModel : ObservableObject
         try
         {
             // 切换曲谱前先停止演奏并清理上一次的曲谱引用
-            _player.Stop();
+            StopPlayer();
             IsPlaying = false;
             CountdownText = string.Empty;
             Notes = null;
@@ -452,15 +515,23 @@ public partial class MainWindowViewModel : ObservableObject
     {
         if (Tracks.Count == 0) return;
         // 仅对当前实际会演奏的轨道做评估（被 Mute 或被其它 Solo 屏蔽的轨道不参与）。
-        var activeNotes = Tracks.Where(t => t.IsAudible).SelectMany(t => t.Notes).ToList();
-        int total = activeNotes.Count;
+        // 已应用各轨 OctaveOffset：自动移调时认为本轨用户已经做了八度微调，
+        // 在此基础上再寻找最优全局 Transpose，不会推翻用户的单轨决策。
+        var activePitches = new List<int>();
+        foreach (var t in Tracks)
+        {
+            if (!t.IsAudible) continue;
+            int oct12 = t.OctaveOffset * 12;
+            foreach (var n in t.Notes) activePitches.Add(n.OriginalPitch + oct12);
+        }
+        int total = activePitches.Count;
         if (total == 0)
         {
             StatusText = "当前没有可演奏的轨道（请检查 Mute / Solo 状态）";
             return;
         }
 
-        var inCurrent = MidiParser.FindBestTransposeWithScore(activeNotes, SelectedInstrumentGroup);
+        var inCurrent = MidiParser.FindBestTransposeWithScore(activePitches, SelectedInstrumentGroup);
 
         if (inCurrent.Score >= total)
         {
@@ -469,7 +540,7 @@ public partial class MainWindowViewModel : ObservableObject
             return;
         }
 
-        var best = MidiParser.FindBestTransposeAcrossGroups(activeNotes, AvailableInstrumentGroups, SelectedInstrumentGroup);
+        var best = MidiParser.FindBestTransposeAcrossGroups(activePitches, AvailableInstrumentGroups, SelectedInstrumentGroup);
 
         if (best.Score <= inCurrent.Score)
         {
@@ -501,6 +572,28 @@ public partial class MainWindowViewModel : ObservableObject
 
     [RelayCommand]
     private void TransposeDown() => Transpose--;
+
+    /// <summary>单轨 OctaveOffset 的合理范围，避免把音符推到 MIDI 0–127 之外或离谱的 ±10 八度。</summary>
+    public const int MinTrackOctaveOffset = -4;
+    public const int MaxTrackOctaveOffset = 4;
+
+    /// <summary>把指定轨道的八度偏移 +1（带上限钳制）。</summary>
+    [RelayCommand]
+    private void TrackOctaveUp(MidiTrack? track)
+    {
+        if (track == null) return;
+        if (track.OctaveOffset >= MaxTrackOctaveOffset) return;
+        track.OctaveOffset++;
+    }
+
+    /// <summary>把指定轨道的八度偏移 −1（带下限钳制）。</summary>
+    [RelayCommand]
+    private void TrackOctaveDown(MidiTrack? track)
+    {
+        if (track == null) return;
+        if (track.OctaveOffset <= MinTrackOctaveOffset) return;
+        track.OctaveOffset--;
+    }
 
     [RelayCommand]
     private void Play()
@@ -577,7 +670,7 @@ public partial class MainWindowViewModel : ObservableObject
     private void Pause()
     {
         if (!IsPlaying && string.IsNullOrEmpty(CountdownText)) return;
-        _player.Stop();
+        StopPlayer();
         IsPlaying = false;
         CountdownText = string.Empty;
         StatusText = $"已暂停于 {FormatTime(Playhead)}";
@@ -593,7 +686,7 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void Stop()
     {
-        _player.Stop();
+        StopPlayer();
         IsPlaying = false;
         CountdownText = string.Empty;
         Playhead = 0;
@@ -603,7 +696,7 @@ public partial class MainWindowViewModel : ObservableObject
     [RelayCommand]
     private void RestartFromStart()
     {
-        _player.Stop();
+        StopPlayer();
         IsPlaying = false;
         CountdownText = string.Empty;
         Playhead = 0;
@@ -613,7 +706,7 @@ public partial class MainWindowViewModel : ObservableObject
     public void Seek(double seconds)
     {
         bool wasPlaying = IsPlaying;
-        if (wasPlaying) _player.Stop();
+        if (wasPlaying) StopPlayer();
         Playhead = Math.Clamp(seconds, 0, Math.Max(0, Duration));
         CountdownText = string.Empty;
         if (wasPlaying)
@@ -665,7 +758,7 @@ public partial class MainWindowViewModel : ObservableObject
         bool wasPlaying = IsPlaying;
         if (wasPlaying)
         {
-            _player.Stop();
+            StopPlayer();
             IsPlaying = false;
             CountdownText = string.Empty;
         }

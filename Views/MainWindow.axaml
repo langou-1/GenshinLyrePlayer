@@ -32,6 +32,16 @@
             <Setter Property="HorizontalContentAlignment" Value="Center"/>
             <Setter Property="VerticalContentAlignment" Value="Center"/>
         </Style>
+        <!-- 轨道头 八度偏移 +/- 按钮（比 Mute/Solo 更窄一点，挤进 170px 头部） -->
+        <Style Selector="Button.trackOctave">
+            <Setter Property="Width" Value="16"/>
+            <Setter Property="Height" Value="20"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="FontSize" Value="10"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="HorizontalContentAlignment" Value="Center"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
         <!-- Mute：选中时红色 -->
         <Style Selector="ToggleButton.mute:checked">
             <Setter Property="Background" Value="#e35555"/>
@@ -183,7 +193,7 @@
                                         Tag="{Binding}"
                                         PointerPressed="OnTrackHeadPressed"
                                         Cursor="Hand">
-                                    <Grid ColumnDefinitions="Auto,Auto,Auto,*" VerticalAlignment="Center">
+                                    <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,*" VerticalAlignment="Center">
                                         <Rectangle Grid.Column="0" Width="4" Height="22"
                                                    VerticalAlignment="Center"
                                                    RadiusX="2" RadiusY="2">
@@ -199,9 +209,30 @@
                                         <ToggleButton Grid.Column="2" Classes="trackToggle solo"
                                                       IsChecked="{Binding Solo}"
                                                       Content="S"
-                                                      Margin="0,0,6,0"
+                                                      Margin="0,0,4,0"
                                                       ToolTip.Tip="独奏此轨道。任意一条轨道开启 Solo 后，未 Solo 的轨道都会被屏蔽（即使没有 Mute）。Solo 优先于 Mute。"/>
-                                        <TextBlock Grid.Column="3"
+                                        <!-- 单轨八度偏移：在全局 Transpose 之外，再为本轨叠加 12*N 半音 -->
+                                        <Button Grid.Column="3" Classes="trackOctave"
+                                                Content="−"
+                                                Command="{Binding #RootWindow.((vm:MainWindowViewModel)DataContext).TrackOctaveDownCommand}"
+                                                CommandParameter="{Binding}"
+                                                ToolTip.Tip="本轨道单独下移一个八度（叠加在全局移调之上）"/>
+                                        <TextBlock Grid.Column="4"
+                                                   Text="{Binding OctaveOffset, StringFormat={}{0:+#;-#;0}}"
+                                                   VerticalAlignment="Center"
+                                                   HorizontalAlignment="Center"
+                                                   MinWidth="16"
+                                                   TextAlignment="Center"
+                                                   FontSize="11"
+                                                   Foreground="#bcc"
+                                                   ToolTip.Tip="本轨道当前的八度偏移（单位：八度）"/>
+                                        <Button Grid.Column="5" Classes="trackOctave"
+                                                Content="+"
+                                                Margin="0,0,4,0"
+                                                Command="{Binding #RootWindow.((vm:MainWindowViewModel)DataContext).TrackOctaveUpCommand}"
+                                                CommandParameter="{Binding}"
+                                                ToolTip.Tip="本轨道单独上移一个八度（叠加在全局移调之上）"/>
+                                        <TextBlock Grid.Column="6"
                                                    Text="{Binding Name}"
                                                    VerticalAlignment="Center"
                                                    TextTrimming="CharacterEllipsis"

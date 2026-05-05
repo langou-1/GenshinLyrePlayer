@@ -222,7 +222,20 @@ public static class MidiParser
 
     public static TransposeResult FindBestTransposeWithScore(IList<Note> notes, InstrumentGroup group)
     {
-        if (notes.Count == 0) return new TransposeResult(group, 0, 0);
+        var pitches = new int[notes.Count];
+        for (int i = 0; i < notes.Count; i++) pitches[i] = notes[i].OriginalPitch;
+        return FindBestTransposeWithScore(pitches, group);
+    }
+
+    /// <summary>
+    /// 仅依据音高列表（已经包含任意预偏移）计算最佳全局移调。
+    /// 用于多轨场景下，每条轨道带有自己的 OctaveOffset：调用方先把
+    /// <c>OriginalPitch + OctaveOffset * 12</c> 展平成一维音高数组传进来，
+    /// 这里再用 <see cref="InstrumentGroup.IsSupported"/> 评分。
+    /// </summary>
+    public static TransposeResult FindBestTransposeWithScore(IList<int> pitches, InstrumentGroup group)
+    {
+        if (pitches.Count == 0) return new TransposeResult(group, 0, 0);
 
         int bestShift = 0;
         int bestScore = -1;
@@ -231,9 +244,9 @@ public static class MidiParser
         for (int shift = -36; shift <= 36; shift++)
         {
             int score = 0;
-            foreach (var n in notes)
+            foreach (var p in pitches)
             {
-                if (group.IsSupported(n.OriginalPitch + shift)) score++;
+                if (group.IsSupported(p + shift)) score++;
             }
 
             if (score > bestScore || (score == bestScore && Math.Abs(shift) < bestAbs))
@@ -251,10 +264,21 @@ public static class MidiParser
         IEnumerable<InstrumentGroup> groups,
         InstrumentGroup? preferred = null)
     {
+        var pitches = new int[notes.Count];
+        for (int i = 0; i < notes.Count; i++) pitches[i] = notes[i].OriginalPitch;
+        return FindBestTransposeAcrossGroups(pitches, groups, preferred);
+    }
+
+    /// <summary>音高列表版本，详见 <see cref="FindBestTransposeWithScore(IList{int}, InstrumentGroup)"/>。</summary>
+    public static TransposeResult FindBestTransposeAcrossGroups(
+        IList<int> pitches,
+        IEnumerable<InstrumentGroup> groups,
+        InstrumentGroup? preferred = null)
+    {
         TransposeResult? best = null;
         foreach (var g in groups)
         {
-            var r = FindBestTransposeWithScore(notes, g);
+            var r = FindBestTransposeWithScore(pitches, g);
             if (best is null)
             {
                 best = r;
