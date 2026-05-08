@@ -69,6 +69,11 @@ public partial class MainWindowViewModel : ObservableObject
             CountdownText = sec > 0 ? $"准备演奏: {sec}" : string.Empty;
         });
 
+        _scheduleTimer = new DispatcherTimer(
+            TimeSpan.FromMilliseconds(500),
+            DispatcherPriority.Background,
+            (_, _) => CheckSchedule());
+
         Tracks.CollectionChanged += OnTracksCollectionChanged;
 
         // 默认选中第一项 = 演奏到原神
@@ -359,6 +364,76 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private bool _isPlaying;
     [ObservableProperty] private string? _countdownText;
     [ObservableProperty] private string? _statusText = "就绪";
+
+    // ===== 定时演奏 =====
+
+    /// <summary>定时演奏的目标时间（北京时间 UTC+8，仅取时分）。</summary>
+    [ObservableProperty] private TimeSpan _scheduledTime = new(12, 0, 0);
+
+    /// <summary>是否启用定时演奏。</summary>
+    [ObservableProperty] private bool _isScheduled;
+
+    /// <summary>定时演奏状态文本，显示在工具栏上。</summary>
+    [ObservableProperty] private string? _scheduledStatus;
+
+    private DispatcherTimer _scheduleTimer = null!;
+    private DateTime _lastTriggeredDate;
+
+    partial void OnIsScheduledChanged(bool value)
+    {
+        if (value)
+        {
+            var now = BeijingNow;
+            var target = now.Date + ScheduledTime;
+            // 如果今天的目标时间已过，标记今天已触发，等到明天
+            _lastTriggeredDate = now >= target ? now.Date : default;
+            _scheduleTimer.Start();
+            // 立即刷新一次倒计时
+            CheckSchedule();
+        }
+        else
+        {
+            _scheduleTimer.Stop();
+            ScheduledStatus = null;
+        }
+    }
+
+    private static DateTime BeijingNow => DateTime.UtcNow.AddHours(8);
+
+    private void CheckSchedule()
+    {
+        if (!IsScheduled) return;
+
+        var now = BeijingNow;
+
+        if (_lastTriggeredDate.Date == now.Date) return;
+
+        var target = now.Date + ScheduledTime;
+        if (now >= target)
+        {
+            _lastTriggeredDate = now.Date;
+            if (Tracks.Count == 0)
+            {
+                ScheduledStatus = "未加载曲谱，无法定时演奏";
+                IsScheduled = false;
+                return;
+            }
+            if (IsPlaying)
+            {
+                ScheduledStatus = "正在演奏中";
+                IsScheduled = false;
+                return;
+            }
+            ScheduledStatus = null;
+            IsScheduled = false;
+            Play();
+        }
+        else
+        {
+            var remain = target - now;
+            ScheduledStatus = $"将在 {ScheduledTime:hh\\:mm} 开始（{remain.Hours:D2}:{remain.Minutes:D2}:{remain.Seconds:D2}）";
+        }
+    }
 
     public IReadOnlyList<InstrumentGroup> AvailableInstrumentGroups { get; } = Instruments.Groups;
 
