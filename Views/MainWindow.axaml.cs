@@ -32,6 +32,19 @@ public partial class MainWindow : Window
         DataContextChanged += (_, _) => HookVm();
         KeyDown += OnHotKey;
 
+        // Slider 的 Thumb 在拖动时会吞掉 PointerPressed/PointerReleased 事件
+        // （标记为已处理）。这里用 handledEventsToo 强行接收，配合
+        // IsDraggingTimeline 标志位阻断 PlayheadChanged → Playhead →
+        // Slider.Value 的 30Hz 更新链，避免播放过程中拖动进度条时被弹回。
+        TimelineSlider.AddHandler(InputElement.PointerPressedEvent,
+            (_, _) => { if (Vm is not null) Vm.IsDraggingTimeline = true; },
+            handledEventsToo: true);
+        TimelineSlider.AddHandler(InputElement.PointerReleasedEvent,
+            OnTimelineDragFinished, handledEventsToo: true);
+        TimelineSlider.AddHandler(InputElement.PointerCaptureLostEvent,
+            (_, _) => { if (Vm is not null) Vm.IsDraggingTimeline = false; },
+            handledEventsToo: true);
+
         // 拖拽 MIDI 文件到窗口任意位置即可导入
         AddHandler(DragDrop.DragOverEvent, OnDragOver);
         AddHandler(DragDrop.DropEvent, OnDrop);
@@ -84,6 +97,13 @@ public partial class MainWindow : Window
             if (e.PropertyName == nameof(MainWindowViewModel.Duration)
              || e.PropertyName == nameof(MainWindowViewModel.PixelsPerSecond))
                 Dispatcher.UIThread.Post(UpdateViewport);
+            else if (e.PropertyName == nameof(MainWindowViewModel.Playhead))
+            {
+                // 用户拖动滑块时不更新 Slider.Value，避免 PlayheadChanged
+                // 的 30Hz 更新把滑块反复拉回当前播放位置。
+                if (!Vm.IsDraggingTimeline)
+                    TimelineSlider.Value = Vm.Playhead;
+            }
         };
         // 仅在 Player 自然推进时尝试自动翻页——这样用户 Seek（钢琴卷帘点击 / 时间轴滑块
         // 拖放 / Home 键）和 Slider 双向绑定的中间值都不会再触发视野位移。这些入口在调用
@@ -189,9 +209,10 @@ public partial class MainWindow : Window
         EnsurePlayheadVisible(seconds, offX, viewW);
     }
 
-    private void OnTimelineReleased(object? sender, PointerReleasedEventArgs e)
+    private void OnTimelineDragFinished(object? sender, PointerReleasedEventArgs e)
     {
         if (Vm is null) return;
+        Vm.IsDraggingTimeline = false;
         double target = TimelineSlider.Value;
         double offX = RollScroll.Offset.X;
         double viewW = RollScroll.Viewport.Width;

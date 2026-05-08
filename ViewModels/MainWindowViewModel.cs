@@ -53,6 +53,7 @@ public partial class MainWindowViewModel : ObservableObject
             Dispatcher.UIThread.Post(() =>
             {
                 if (session != Volatile.Read(ref _playSession)) return;
+                if (IsDraggingTimeline) return;
                 Playhead = p;
                 if (Duration > 0 && Playhead >= Duration) { /* will finish */ }
                 PlayerAdvanced?.Invoke();
@@ -345,6 +346,12 @@ public partial class MainWindowViewModel : ObservableObject
     [ObservableProperty] private string? _filePath;
     [ObservableProperty] private double _duration;
     [ObservableProperty] private double _playhead;
+
+    /// <summary>
+    /// 用户正在拖动时间线滑块时设为 true，阻止 PlayheadChanged 回写 Playhead，
+    /// 避免滑块在播放过程中被 30Hz 的进度更新反复拉回当前位置而无法拖动。
+    /// </summary>
+    public bool IsDraggingTimeline { get; set; }
     [ObservableProperty] private int _transpose;
     [ObservableProperty] private double _pixelsPerSecond = 120;
     [ObservableProperty] private int _countdownSeconds = 3;

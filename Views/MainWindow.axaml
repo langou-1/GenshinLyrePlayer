@@ -142,15 +142,14 @@
             <Grid ColumnDefinitions="Auto,*,Auto">
                 <TextBlock Text="{Binding PlayheadText}" VerticalAlignment="Center" Margin="0,0,10,0"/>
                 <Slider Grid.Column="1" Minimum="0" Maximum="{Binding Duration}"
-                        Value="{Binding Playhead}" Name="TimelineSlider"
-                        PointerReleased="OnTimelineReleased"/>
+                        Value="0" Name="TimelineSlider"/>
                 <TextBlock Grid.Column="2"
                            Text="{Binding CountdownText}" Foreground="#ffd250"
                            FontWeight="Bold" VerticalAlignment="Center" Margin="10,0,0,0"/>
             </Grid>
         </Border>
 
-        <!-- 多轨缩略图（固定在钢琴卷帘上方）。第一条是固定的“速度轨”，
+        <!-- 多轨缩略图（固定在钢琴卷帘上方）。第一条是固定的"速度轨"，
              用来展示 SetTempo 标签 + 整体倍速控制；其下才是常规音轨。 -->
         <Border DockPanel.Dock="Top"
                 Background="#17191f"
