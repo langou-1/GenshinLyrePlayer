@@ -1,0 +1,44 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="GenshinLyrePlayer.Views.LetterScoreDialog"
+        Title="导入字母谱"
+        Width="560" Height="480"
+        WindowStartupLocation="CenterOwner"
+        CanResize="False">
+
+    <DockPanel Margin="16">
+        <!-- 顶部说明 -->
+        <TextBlock DockPanel.Dock="Top" Margin="0,0,0,8" TextWrapping="Wrap"
+                   Foreground="#bcc" FontSize="12">
+            请将字母谱粘贴到下方文本框中，然后点击「确定」导入（自动识别格式）。
+            ● 简易格式：字母=音符，括号=和弦（如 (DACN)SSAAFDS）；
+            ● 高级格式：音符后跟 ~ . ; : , 定时值（如 (NJE).Q.H~），琶音 (琶...)；
+            ● 斜杠格式：/ 分拍子，拍内音符均分时值（如 (SW) H /N (HH)Q/）；
+            ● 短横线格式：- 延长前一音符（如 (VAH)--D-G-），[...] 装饰音组。
+            有效字母：Q W E R T Y U（高音）、A S D F G H J（中音）、Z X C V B N M（低音）。
+        </TextBlock>
+
+        <!-- 底部按钮 -->
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Spacing="8" Margin="0,12,0,0">
+            <Button Content="取消" Width="80" Click="OnCancelClicked"/>
+            <Button Content="确定" Width="80" Click="OnOkClicked"
+                    Classes="accent"/>
+        </StackPanel>
+
+        <!-- 文本输入区 -->
+        <TextBox Name="InputBox"
+                 AcceptsReturn="True"
+                 TextWrapping="Wrap"
+                 Watermark="在此粘贴字母谱文本…"
+                 FontFamily="Consolas, Courier New, monospace"
+                 FontSize="13"/>
+    </DockPanel>
+
+    <Window.Styles>
+        <Style Selector="Button.accent">
+            <Setter Property="Background" Value="#5AC8F0"/>
+            <Setter Property="Foreground" Value="White"/>
+        </Style>
+    </Window.Styles>
+</Window>

@@ -350,6 +350,54 @@ public partial class MainWindow : Window
         }
     }
 
+    private async void OnImportLetterScoreClicked(object? sender, RoutedEventArgs e)
+    {
+        if (Vm is null) return;
+        var dialog = new LetterScoreDialog();
+        await dialog.ShowDialog(this);
+        if (!string.IsNullOrWhiteSpace(dialog.ResultText))
+        {
+            Vm.LoadFromLetterScore(dialog.ResultText);
+        }
+    }
+
+    private async void OnExportMidiClicked(object? sender, RoutedEventArgs e)
+    {
+        if (Vm is null || Vm.Tracks.Count == 0)
+        {
+            if (Vm != null) Vm.StatusText = "没有可导出的轨道";
+            return;
+        }
+
+        try
+        {
+            var provider = StorageProvider;
+            // 生成建议文件名：去掉原扩展名后加 .mid
+            string suggested = Vm.FileName ?? "export";
+            var dotIdx = suggested.LastIndexOf('.');
+            if (dotIdx > 0) suggested = suggested[..dotIdx];
+
+            var file = await provider.SaveFilePickerAsync(new FilePickerSaveOptions
+            {
+                Title = "导出 MIDI 文件",
+                DefaultExtension = "mid",
+                FileTypeChoices = new[]
+                {
+                    new FilePickerFileType("MIDI 文件") { Patterns = new[] { "*.mid" } },
+                },
+                SuggestedFileName = suggested,
+            });
+            if (file == null) return;
+            var path = file.TryGetLocalPath();
+            if (!string.IsNullOrEmpty(path))
+                Vm.ExportMidi(path);
+        }
+        catch (Exception ex)
+        {
+            if (Vm != null) Vm.StatusText = $"导出失败: {ex.Message}";
+        }
+    }
+
     private void OnHotKey(object? sender, KeyEventArgs e)
     {
         if (Vm is null) return;

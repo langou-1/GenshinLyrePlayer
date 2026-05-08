@@ -446,6 +446,90 @@ public partial class MainWindowViewModel : ObservableObject
 
     partial void OnSpeedChanged(double value) => _player.Speed = value;
 
+    /// <summary>
+    /// 从字母谱文本加载乐谱。流程与 <see cref="LoadMidiAsync"/> 基本一致，
+    /// 但用 <see cref="LetterScoreParser"/> 替代 <see cref="MidiParser"/>。
+    /// </summary>
+    public void LoadFromLetterScore(string text)
+    {
+        try
+        {
+            // 切换曲谱前先停止演奏并清理上一次的曲谱引用
+            StopPlayer();
+            IsPlaying = false;
+            CountdownText = string.Empty;
+            Notes = null;
+            SelectedTrack = null;
+            Tempos = Array.Empty<TempoMarker>();
+            if (_tempoManager != null)
+            {
+                _tempoManager.Changed -= OnTempoManagerChanged;
+                _tempoManager = null;
+                OnPropertyChanged(nameof(TempoManagerForView));
+            }
+            TimeSignatureManagerForView = null;
+            _maxEndTick = 0;
+            Tracks.Clear();
+            TotalNotes = 0;
+            SupportedNotes = 0;
+            UnsupportedNotes = 0;
+            Playhead = 0;
+            Duration = 0;
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+
+            StatusText = "正在解析字母谱…";
+            var result = LetterScoreParser.Parse(text);
+            FilePath = null;
+            FileName = result.FileName;
+            _tempoManager = result.TempoManager;
+            _tempoManager.Changed += OnTempoManagerChanged;
+            OnPropertyChanged(nameof(TempoManagerForView));
+            TimeSignatureManagerForView = result.TimeSignatureManager;
+            _maxEndTick = result.MaxEndTick;
+            Duration = result.TotalDuration;
+            Playhead = 0;
+            Tempos = new List<TempoMarker>(_tempoManager.Markers);
+
+            foreach (var tr in result.Tracks) Tracks.Add(tr);
+            UpdateAudibleStates();
+            SelectedTrack = Tracks.FirstOrDefault();
+
+            if (Transpose != 0)
+                Transpose = 0;
+            else
+                ReapplyMapping();
+
+            StatusText = $"已导入字母谱：{Tracks.Count} 条轨道 / {TotalNotes} 个音符，时长 {FormatTime(Duration)}";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"字母谱导入失败: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// 将当前已加载的轨道导出为 MIDI 文件。
+    /// </summary>
+    public void ExportMidi(string path)
+    {
+        try
+        {
+            if (Tracks.Count == 0)
+            {
+                StatusText = "没有可导出的轨道";
+                return;
+            }
+            MidiExporter.Export(path, Tracks, _tempoManager, _timeSignatureManager);
+            StatusText = $"已导出 MIDI 文件: {System.IO.Path.GetFileName(path)}";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"导出 MIDI 失败: {ex.Message}";
+        }
+    }
+
     public async Task LoadMidiAsync(string path)
     {
         try
